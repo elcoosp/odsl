@@ -1,0 +1,260 @@
+//! The target code generation trait and the validation pipeline.
+//!
+//! [`CodeRenderer`] is the seam that keeps the compiler core decoupled from any
+//! specific ORM/driver (ADR-003). Renderers live in their own crates and
+//! consume a *validated* [`Ast`].
+
+use crate::ast::{Ast, Field};
+use crate::errors::{CompileErrorKind, OsdlError};
+use crate::intent_compat::Target;
+use crate::types::{FieldType, Intent, Reference, ScalarType};
+use std::collections::{HashMap, HashSet};
+
+/// A target backend renderer.
+pub trait CodeRenderer {
+    /// Human-readable target name, e.g. `seaorm`, `mongo`.
+    fn target(&self) -> Target;
+
+    /// Render the full set of files for the schema. Each entry is
+    /// `(relative_path, contents)`. The CLI writes these to disk.
+    fn render(&self, ast: &Ast) -> Result<Vec<(String, String)>, OsdlError>;
+}
+
+/// The unified validation + reference-resolution pipeline.
+///
+/// Produces business-rule and target-compatibility errors exactly as the SRS
+/// requires (BR-001..003, REQ-FUNC-004/006/007/008).
+pub struct Validator;
+
+impl Validator {
+    /// Validate `ast` against the shared business rules. `target` enables
+    /// target-compatibility checks (REQ-FUNC-008 / BR-003); pass `None` to skip
+    /// them (e.g. when only code-gen structure matters).
+    pub fn validate(ast: &Ast, target: Option<Target>) -> Result<(), OsdlError> {
+        Self::resolve_references(ast)?;
+        Self::check_keys(ast)?;
+        Self::check_intent_compat(ast)?;
+        if let Some(t) = target {
+            Self::check_target_compat(ast, t)?;
+            Self::prevent_cycles(ast)?;
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-004 / BR-002: every `Model.field` reference must resolve.
+    fn resolve_references(ast: &Ast) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            for (_fidx, field) in model.fields() {
+                if let FieldType::Ref(r) = &field.ty {
+                    if ast.model_by_name(&r.model).is_none() {
+                        return Err(OsdlError::compile(CompileErrorKind::UnresolvedReference {
+                            from: format!("{}.{}", model.name, field.name),
+                            target: r.model.clone(),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// BR-001: every model must declare exactly one primary/partition key.
+    fn check_keys(ast: &Ast) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            let keys = model
+                .fields()
+                .filter(|(_, f)| f.has(Intent::Pk) || f.has(Intent::Partition))
+                .count();
+            if keys != 1 {
+                return Err(OsdlError::compile(CompileErrorKind::MissingKey {
+                    model: model.name.clone(),
+                }));
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-007: an intent flag must be applied to a compatible field type.
+    fn check_intent_compat(ast: &Ast) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            for (_fidx, field) in model.fields() {
+                for intent in &field.intents {
+                    if !is_intent_compatible(*intent, &field.ty) {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: intent.as_keyword().to_string(),
+                            ty: field.type_keyword(),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-008 / BR-003: target must support every requested intent.
+    fn check_target_compat(ast: &Ast, target: Target) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            for (_fidx, field) in model.fields() {
+                for intent in &field.intents {
+                    if !target_supports(target, *intent, &field.ty) {
+                        return Err(OsdlError::compile(CompileErrorKind::TargetIncompatibility {
+                            feature: intent.as_keyword().to_string(),
+                            target: target_label(target),
+                            detail: format!("field `{}`", field.name),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-006: detect cyclic `Ref`/`-relation` dependencies between models.
+    fn prevent_cycles(ast: &Ast) -> Result<(), OsdlError> {
+        // Build adjacency: model -> referenced models.
+        let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
+        for (_midx, model) in ast.models() {
+            let entry = adj.entry(model.name.clone()).or_default();
+            for (_fidx, field) in model.fields() {
+                match &field.ty {
+                    FieldType::Ref(r) => {
+                        if r.model != model.name {
+                            entry.insert(r.model.clone());
+                        }
+                    }
+                    FieldType::InferredRef(s) if is_model_name(ast, s) && s != &model.name => {
+                        entry.insert(s.clone());
+                    }
+                    _ => {}
+                }
+                if field.has(Intent::Relation) {
+                    if let Some(tgt) = relation_target(field) {
+                        if ast.model_by_name(&tgt).is_some() && tgt != model.name {
+                            entry.insert(tgt);
+                        }
+                    }
+                }
+            }
+        }
+
+        // DFS with a recursion stack to find a cycle.
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = Vec::new();
+        for (_midx, model) in ast.models() {
+            if !visited.contains(&model.name) {
+                if let Some(cycle) = dfs(&adj, &model.name, &mut visited, &mut stack) {
+                    return Err(OsdlError::compile(CompileErrorKind::CyclicDependency {
+                        models: cycle,
+                    }));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_model_name(ast: &Ast, name: &str) -> bool {
+    ast.model_by_name(name).is_some()
+}
+
+/// `-relation` carries the target model in its name, e.g. `posts -relation Post`.
+/// We encode the target as `relation:Post` in the type keyword, see parser.
+fn relation_target(field: &Field) -> Option<String> {
+    // The parser stores `-relation <Model>` as type keyword `relation:Model`.
+    if let FieldType::InferredRef(s) = &field.ty {
+        if let Some(stripped) = s.strip_prefix("relation:") {
+            return Some(stripped.to_string());
+        }
+    }
+    None
+}
+
+fn dfs(
+    adj: &HashMap<String, HashSet<String>>,
+    node: &str,
+    visited: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    visited.insert(node.to_string());
+    stack.push(node.to_string());
+    if let Some(neighbors) = adj.get(node) {
+        for n in neighbors {
+            if stack.contains(n) {
+                // cycle found: return the slice of the stack from `n`.
+                let start = stack.iter().position(|s| s == n).unwrap();
+                return Some(stack[start..].to_vec());
+            }
+            if !visited.contains(n) {
+                if let Some(cycle) = dfs(adj, n, visited, stack) {
+                    return Some(cycle);
+                }
+            }
+        }
+    }
+    stack.pop();
+    None
+}
+
+/// Whether an intent is semantically valid on a given (possibly unresolved) type.
+fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
+    use Intent::*;
+    match intent {
+        Pk | Partition | Uniq | Null | Auto | Tz | Relation => true,
+        Fulltext => {
+            // Full-text search only makes sense on textual types.
+            matches!(ty, FieldType::Scalar(ScalarType::String))
+                || matches!(ty, FieldType::InferredRef(_))
+        }
+    }
+}
+
+/// Whether a target backend natively supports an intent for a given type.
+fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
+    use Intent::*;
+    use Target::*;
+    match (target, intent) {
+        // SQL backends support these intents natively.
+        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation) => true,
+        (SeaOrmSqlite, Fulltext) => true, // SQLite FTS5
+        (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
+        (SeaOrmPostgres, Pk | Uniq | Null | Auto | Tz | Relation) => true,
+        (SeaOrmPostgres, Fulltext) => true, // PG GIN
+        (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
+        // Mongo supports these natively.
+        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation) => true,
+        (Mongo, Auto) => false, // Mongo has no auto-increment
+        (Mongo, Fulltext) => true, // Mongo text index
+    }
+}
+
+fn target_label(target: Target) -> String {
+    target.as_str().to_string()
+}
+
+/// Helper used by both renderer crates: map a scalar to its canonical Rust type
+/// string for SeaORM entities.
+pub fn rust_type_for(scalar: ScalarType) -> &'static str {
+    match scalar {
+        ScalarType::String => "String",
+        ScalarType::Int => "i32",
+        ScalarType::BigInt => "i64",
+        ScalarType::Float => "f64",
+        ScalarType::Bool => "bool",
+        ScalarType::DateTime => "chrono::DateTime<chrono::Utc>",
+        ScalarType::Date => "chrono::NaiveDate",
+        ScalarType::Uuid => "uuid::Uuid",
+        ScalarType::Json => "serde_json::Value",
+        ScalarType::Binary => "Vec<u8>",
+    }
+}
+
+/// Resolve the referenced [`Reference`] from a field, if it is a ref/relation.
+pub fn field_reference(field: &Field) -> Option<Reference> {
+    match &field.ty {
+        FieldType::Ref(r) => Some(r.clone()),
+        FieldType::InferredRef(s) if s.starts_with("relation:") => {
+            Some(Reference { model: s.trim_start_matches("relation:").to_string(), field: "id".into() })
+        }
+        _ => None,
+    }
+}
