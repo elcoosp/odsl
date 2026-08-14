@@ -1,0 +1,48 @@
+//! # OSDL Grammar (pest PEG)
+//!
+//! The OSDL surface syntax is intentionally token-minimal:
+//!
+//! ```text
+//! # comments start with '#'
+//! User                  # model declaration (top-level, no indentation)
+//!   id uuid -pk         # field: name, type, intent flag(s)
+//!   email string -uniq
+//!   created_at datetime -tz
+//!   posts -relation Post          # a relation to another model
+//!   author User.id                # an explicit foreign key (Model.field)
+//!   profile_id                    # omitted type -> inferred foreign key
+//! ```
+//!
+//! Indentation is the only structural punctuation: a top-level line (indent 0)
+//! begins a `Model`; any indented line adds a `Field` to the most recently
+//! declared model. Each source line is terminated by a newline (not `EOI`),
+//! which keeps the `line*` repetition strictly progressing.
+//!
+//! Whitespace handling is explicit: leading indentation is captured by `indent`
+//! (so it is NOT swallowed as implicit whitespace), and a single space
+//! separates a field name from its type/intent tokens via `sp`.
+
+file    = { SOI ~ line* ~ EOI }
+
+line    = { indent ~ body ~ newline }
+body    = { name ~ (sp ~ token)* | comment_part | "" }
+
+indent  = @{ (" " | "\t")* }
+
+name    = @{ ident_char+ }
+token   = { flag | reference | word }
+sp      = _{ " " }
+
+// Intent flags always begin with '-'.
+flag    = @{ "-" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+// A cross-model reference: Model.field (the '.' is the only operator).
+reference = @{ ident ~ "." ~ ident }
+word    = @{ ident_char+ }
+
+ident_char = _{ ASCII_ALPHANUMERIC | "_" }
+ident      = @{ ident_char+ }
+
+comment_part = { "#" ~ (!newline_char ~ ANY)* }
+
+newline      = _{ "\r\n" | "\n" | "\r" }
+newline_char = _{ "\n" | "\r" }
