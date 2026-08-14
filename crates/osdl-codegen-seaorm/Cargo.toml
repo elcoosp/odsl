@@ -1,0 +1,19 @@
+[package]
+name = "osdl-codegen-seaorm"
+description = "SeaORM 2.x renderer for OSDL"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+osdl-core.workspace = true
+osdl-codegen.workspace = true
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+prettyplease.workspace = true
+
+[dev-dependencies]
+osdl-parser.workspace = true
