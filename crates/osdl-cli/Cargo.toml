@@ -1,0 +1,29 @@
+[package]
+name = "osdl-cli"
+description = "The OSDL compiler CLI (init, build, migrate)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "osdl"
+path = "src/main.rs"
+
+[dependencies]
+osdl-core.workspace = true
+osdl-parser.workspace = true
+osdl-codegen.workspace = true
+osdl-codegen-seaorm.workspace = true
+osdl-codegen-mongo.workspace = true
+osdl-migrator.workspace = true
+
+clap.workspace = true
+miette.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

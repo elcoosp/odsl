@@ -14,3 +14,7 @@ pest.workspace = true
 pest_derive.workspace = true
 miette.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true

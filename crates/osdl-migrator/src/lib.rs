@@ -9,6 +9,8 @@
 //! Determinism: ops are emitted in a stable order (drops last, creates first)
 //! so the same schema delta always yields the same migration plan.
 
+#![allow(clippy::result_large_err)]
+
 use osdl_core::ast::{Ast, LockField, LockModel};
 use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
@@ -58,7 +60,7 @@ impl MigrationPlan {
             to.models.iter().map(|m| (m.name.as_str(), m)).collect();
 
         // Created models.
-        for (name, tm) in &to_models {
+        for name in to_models.keys() {
             if !from_models.contains_key(name) {
                 ops.push(MigrationOp::CreateModel {
                     model: (*name).to_string(),
@@ -77,7 +79,7 @@ impl MigrationPlan {
             }
         }
 
-        for (name, _fm) in &from_models {
+        for name in from_models.keys() {
             if !to_models.contains_key(name) {
                 drops.push(MigrationOp::DropModel {
                     model: (*name).to_string(),
@@ -143,7 +145,7 @@ fn diff_fields(from: &LockModel, to: &LockModel, ops: &mut Vec<MigrationOp>) {
         }
     }
 
-    for (name, _ff) in &from_fields {
+    for name in from_fields.keys() {
         if !to_fields.contains_key(name) {
             ops.push(MigrationOp::DropField {
                 model: to.name.clone(),
@@ -180,8 +182,8 @@ pub fn write_lockfile(path: &std::path::Path, lf: &Lockfile) -> Result<(), OsdlE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osdl_core::lockfile::lock_field;
     use osdl_core::Target;
+    use osdl_core::lockfile::lock_field;
 
     fn lf(models: Vec<LockModel>) -> Lockfile {
         Lockfile {

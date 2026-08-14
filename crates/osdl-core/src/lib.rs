@@ -5,6 +5,8 @@
 //! [`CodeRenderer`] trait, the target enumeration and the lockfile format.
 //! It deliberately depends on no parsing or codegen logic.
 
+#![allow(clippy::result_large_err)]
+
 pub mod ast;
 pub mod errors;
 pub mod intent_compat;

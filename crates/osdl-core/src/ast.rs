@@ -139,7 +139,11 @@ impl Ast {
                     .map(|(_, f)| LockField {
                         name: f.name.clone(),
                         ty: f.type_keyword(),
-                        intents: f.intents.iter().map(|i| i.as_keyword().to_string()).collect(),
+                        intents: f
+                            .intents
+                            .iter()
+                            .map(|i| i.as_keyword().to_string())
+                            .collect(),
                     })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));

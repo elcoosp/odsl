@@ -4,8 +4,9 @@
 use osdl_core::ast::Ast;
 use osdl_core::errors::{CompileErrorKind, OsdlError};
 use osdl_core::types::{FieldType, Intent, ScalarType};
-use osdl_parser::parse;
 use osdl_parser::infer;
+use osdl_parser::parse;
+use proptest::prelude::*;
 
 fn find_model<'a>(ast: &'a Ast, name: &str) -> &'a osdl_core::ast::Model {
     let idx = ast.model_by_name(name).expect("model should exist");
@@ -56,7 +57,8 @@ fn resolves_explicit_reference() {
 
 #[test]
 fn resolves_relation_flag() {
-    let src = "User\n  id uuid -pk\n  posts -relation Post\nPost\n  id uuid -pk\n  author User.id\n";
+    let src =
+        "User\n  id uuid -pk\n  posts -relation Post\nPost\n  id uuid -pk\n  author User.id\n";
     let ast = parse(src).unwrap();
     let user = find_model(&ast, "User");
     let posts = find_field(user, "posts");
@@ -75,11 +77,14 @@ fn cyclic_dependency_detected_by_validator() {
     // Parser succeeds; the validator must catch the cycle.
     let src = "A\n  id uuid -pk\n  b B.id\nB\n  id uuid -pk\n  a A.id\n";
     let ast = parse(src).unwrap();
-    let err = osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
+    let err =
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
     match err {
         OsdlError::Compile { kind, .. } => assert_eq!(
             kind,
-            CompileErrorKind::CyclicDependency { models: vec!["A".into(), "B".into()] }
+            CompileErrorKind::CyclicDependency {
+                models: vec!["A".into(), "B".into()]
+            }
         ),
         other => panic!("expected cyclic dependency error, got {other:?}"),
     }
@@ -89,7 +94,8 @@ fn cyclic_dependency_detected_by_validator() {
 fn type_mismatch_detected_by_validator() {
     let src = "User\n  id uuid -pk\n  age int -fulltext\n";
     let ast = parse(src).unwrap();
-    let err = osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
+    let err =
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
     match err {
         OsdlError::Compile { kind, .. } => assert_eq!(
             kind,
@@ -106,9 +112,13 @@ fn type_mismatch_detected_by_validator() {
 fn target_incompatibility_detected() {
     let src = "User\n  id uuid -partition\n";
     let ast = parse(src).unwrap();
-    let err = osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
+    let err =
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
     match err {
-        OsdlError::Compile { kind, .. } => assert!(matches!(kind, CompileErrorKind::TargetIncompatibility { .. })),
+        OsdlError::Compile { kind, .. } => assert!(matches!(
+            kind,
+            CompileErrorKind::TargetIncompatibility { .. }
+        )),
         other => panic!("expected target incompatibility error, got {other:?}"),
     }
 }
@@ -121,4 +131,32 @@ fn inference_helper_works() {
         infer::infer_field_type("user_id", &models, "Post"),
         FieldType::Ref(_)
     ));
+}
+
+// Property test: a model with a handful of well-formed scalar fields always
+// parses into exactly one model with the expected field count.
+proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(50))]
+
+    #[test]
+    fn parses_well_formed_model(
+        fields in proptest::collection::vec(
+            prop_oneof![
+                "[a-z][a-z0-9_]*".prop_filter("need a name", |s| s != "id"),
+                "email", "name", "age", "title", "body", "score", "active",
+            ],
+            1..6,
+        ),
+    ) {
+        let unique: std::collections::HashSet<String> = fields.into_iter().collect();
+        let mut src = String::from("User\n");
+        src.push_str("  id uuid -pk\n");
+        for f in &unique {
+            src.push_str(&format!("  {f} string\n"));
+        }
+        let ast = parse(&src).expect("should parse");
+        let idx = ast.model_by_name("User").expect("model present");
+        let model = &ast.models[idx];
+        prop_assert_eq!(model.fields().count(), unique.len() + 1);
+    }
 }

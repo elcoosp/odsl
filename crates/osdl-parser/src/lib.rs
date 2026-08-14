@@ -5,14 +5,16 @@
 //! runs type inference so the returned AST is ready for the validator or
 //! renderers (REQ-FUNC-002).
 
+#![allow(clippy::result_large_err)]
+
 pub mod infer;
 
 use infer::infer_field_type;
 use osdl_core::ast::{Ast, Field, Model};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
-use pest::iterators::{Pair, Pairs};
 use pest::Parser;
+use pest::iterators::{Pair, Pairs};
 use std::collections::HashSet;
 
 pub mod grammar {
@@ -47,17 +49,17 @@ pub fn parse_and_resolve(src: &str) -> Result<Ast, OsdlError> {
 
 /// Parse OSDL source into a resolved [`Ast`].
 pub fn parse(src: &str) -> Result<Ast, OsdlError> {
-    let pairs = grammar::OsdlParser::parse(Rule::file, src).map_err(|e| {
-        OsdlError::Parse(ParseError::new(format!("parse error: {e}")))
-    })?;
+    let pairs = grammar::OsdlParser::parse(Rule::file, src)
+        .map_err(|e| OsdlError::Parse(ParseError::new(format!("parse error: {e}"))))?;
 
     let mut known_models: HashSet<String> = HashSet::new();
     let parsed = collect_lines(pairs, src)?;
     for line in &parsed {
-        if line.indent == 0 && !line.tokens.is_empty() {
-            if let Some(RawToken::Name(n)) = line.tokens.first() {
-                known_models.insert(n.clone());
-            }
+        if line.indent == 0
+            && !line.tokens.is_empty()
+            && let Some(RawToken::Name(n)) = line.tokens.first()
+        {
+            known_models.insert(n.clone());
         }
     }
 
@@ -65,6 +67,10 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
     let mut current_model: Option<Model> = None;
 
     for pl in &parsed {
+        // Comment-only / blank lines carry no tokens — skip them.
+        if pl.tokens.is_empty() {
+            continue;
+        }
         if pl.indent == 0 {
             if let Some(m) = current_model.take() {
                 ast.add_model(m);
@@ -72,10 +78,10 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
             let name = match pl.tokens.first() {
                 Some(RawToken::Name(n)) => n.clone(),
                 _ => {
-                    return Err(OsdlError::Parse(ParseError::new(
-                        "expected a model name at column 0",
-                    )
-                    .with_span(span_at(src, pl.byte_start, pl.byte_end, pl.line_no), src)))
+                    return Err(OsdlError::Parse(
+                        ParseError::new("expected a model name at column 0")
+                            .with_span(span_at(src, pl.byte_start, pl.byte_end, pl.line_no), src),
+                    ));
                 }
             };
             let mut model = Model {
@@ -98,15 +104,16 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
             }
             current_model = Some(model);
         } else {
-            let m = match current_model.as_mut() {
-                Some(m) => m,
-                None => {
-                    return Err(OsdlError::Parse(ParseError::new(
-                        "field is not inside any model (indented line without a parent model)",
-                    )
-                    .with_span(span_at(src, pl.byte_start, pl.byte_end, pl.line_no), src)))
-                }
-            };
+            let m =
+                match current_model.as_mut() {
+                    Some(m) => m,
+                    None => return Err(OsdlError::Parse(
+                        ParseError::new(
+                            "field is not inside any model (indented line without a parent model)",
+                        )
+                        .with_span(span_at(src, pl.byte_start, pl.byte_end, pl.line_no), src),
+                    )),
+                };
             add_field_from_tokens(
                 m,
                 &pl.tokens,
@@ -146,14 +153,14 @@ fn add_field_from_tokens(
             return Err(OsdlError::Parse(
                 ParseError::new("expected a field name")
                     .with_span(span_at(src, byte_start, byte_end, line_no), src),
-            ))
+            ));
         }
     };
 
     let mut ty: Option<FieldType> = None;
     let mut intents: Vec<Intent> = Vec::new();
 
-    while let Some(tok) = iter.next() {
+    for tok in iter {
         match tok {
             RawToken::Flag(f) => {
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -164,7 +171,10 @@ fn add_field_from_tokens(
                 })?;
                 intents.push(intent);
             }
-            RawToken::Reference { model: rm, field: rf } => {
+            RawToken::Reference {
+                model: rm,
+                field: rf,
+            } => {
                 ty = Some(FieldType::Ref(Reference {
                     model: rm.clone(),
                     field: rf.clone(),
@@ -253,12 +263,13 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                     match b.as_rule() {
                         Rule::name => tokens.push(RawToken::Name(b.as_str().to_string())),
                         Rule::token => {
-                            let t = b.into_inner().next().ok_or_else(|| {
-                                OsdlError::Parse(ParseError::new("empty token").with_span(
-                                    span_at(src, byte_start, byte_end, line_no),
-                                    src,
-                                ))
-                            })?;
+                            let t =
+                                b.into_inner().next().ok_or_else(|| {
+                                    OsdlError::Parse(ParseError::new("empty token").with_span(
+                                        span_at(src, byte_start, byte_end, line_no),
+                                        src,
+                                    ))
+                                })?;
                             match t.as_rule() {
                                 Rule::flag => tokens.push(RawToken::Flag(t.as_str().to_string())),
                                 Rule::reference => {

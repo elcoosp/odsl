@@ -71,7 +71,11 @@ pub enum CompileErrorKind {
     /// REQ-FUNC-007: intent flag incompatible with field type.
     TypeMismatch { intent: String, ty: String },
     /// REQ-FUNC-008 / BR-003: target DB lacks a required intent.
-    TargetIncompatibility { feature: String, target: String, detail: String },
+    TargetIncompatibility {
+        feature: String,
+        target: String,
+        detail: String,
+    },
     /// BR-001: a model has no primary/partition key.
     MissingKey { model: String },
     /// A target was requested that is unknown.
@@ -82,19 +86,36 @@ impl fmt::Display for CompileErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CompileErrorKind::UnresolvedReference { from, target } => {
-                write!(f, "Unresolved reference: `{from}` points to unknown {target}")
+                write!(
+                    f,
+                    "Unresolved reference: `{from}` points to unknown {target}"
+                )
             }
             CompileErrorKind::CyclicDependency { models } => {
-                write!(f, "Cyclic Dependency Detected between {}", models.join(" and "))
+                write!(
+                    f,
+                    "Cyclic Dependency Detected between {}",
+                    models.join(" and ")
+                )
             }
             CompileErrorKind::TypeMismatch { intent, ty } => {
                 write!(f, "Type Mismatch: {intent} cannot be applied to {ty}")
             }
-            CompileErrorKind::TargetIncompatibility { feature, target, detail } => {
-                write!(f, "Target Incompatibility: {target} does not support {feature} natively ({detail})")
+            CompileErrorKind::TargetIncompatibility {
+                feature,
+                target,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "Target Incompatibility: {target} does not support {feature} natively ({detail})"
+                )
             }
             CompileErrorKind::MissingKey { model } => {
-                write!(f, "Model `{model}` must declare exactly one primary (-pk) or partition (-partition) key")
+                write!(
+                    f,
+                    "Model `{model}` must declare exactly one primary (-pk) or partition (-partition) key"
+                )
             }
             CompileErrorKind::UnknownTarget { target } => {
                 write!(f, "Unknown target `{target}`")
@@ -146,7 +167,9 @@ impl Diagnostic for OsdlError {
         match self {
             OsdlError::Parse(p) => p.labels(),
             OsdlError::Compile {
-                span: Some(s), kind, ..
+                span: Some(s),
+                kind,
+                ..
             } => {
                 let len = s.end.saturating_sub(s.start);
                 let label = LabeledSpan::new(Some(kind.to_string()), s.start, len);
@@ -159,9 +182,7 @@ impl Diagnostic for OsdlError {
     fn source_code(&self) -> Option<&dyn SourceCode> {
         match self {
             OsdlError::Parse(p) => p.source_code(),
-            OsdlError::Compile {
-                src: Some(s), ..
-            } => Some(s as &dyn SourceCode),
+            OsdlError::Compile { src: Some(s), .. } => Some(s as &dyn SourceCode),
             _ => None,
         }
     }

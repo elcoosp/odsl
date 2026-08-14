@@ -1,21 +1,18 @@
 //! SeaORM 2.x renderer.
 //!
-//! Generates, per model, a SeaORM entity module:
-//!
-//! * a `Model` struct deriving `DeriveEntityModel` (SeaORM 2.x "dense" format,
-//!   relations live on the struct),
-//! * a `Relation` enum deriving `DeriveRelation`,
-//! * `ActiveModel`/`Entity`/`Column` derives,
-//! * and a `mod.rs` re-exporting every module.
-//!
-//! Output is built from a real [`syn::File`] so it is always valid Rust.
+//! Generates, per model, a SeaORM 2.0 entity module using the dense
+//! model-first format: relations (`belongs_to` / `has_many`) live directly on
+//! the `Model` struct. Output is built from a real [`syn::File`] so it is
+//! always valid Rust.
 
-use osdl_codegen::{format_tokens, to_pascal_case};
+#![allow(clippy::result_large_err)]
+
+use osdl_codegen::format_tokens;
+use osdl_core::Target;
 use osdl_core::ast::{Ast, Field, Model};
 use osdl_core::errors::OsdlError;
 use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
 use osdl_core::validator::CodeRenderer;
-use osdl_core::Target;
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -78,24 +75,29 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
 
     // A `-relation Other` (has_many) field has no physical column: only emit the
     // relation field.
-    if field.has(Intent::Relation) {
-        if let Some(target) = relation_target_entity(field) {
-            let te = syn::Ident::new(&target.to_ascii_lowercase(), proc_macro2::Span::call_site());
-            return quote! {
-                #[sea_orm(has_many)]
-                pub #name: HasMany<super::#te::Entity>,
-            };
-        }
+    if field.has(Intent::Relation)
+        && let Some(target) = relation_target_entity(field)
+    {
+        let te = syn::Ident::new(&target.to_ascii_lowercase(), proc_macro2::Span::call_site());
+        return quote! {
+            #[sea_orm(has_many)]
+            pub #name: HasMany<super::#te::Entity>,
+        };
     }
 
     // A reference (`Other.field` / `Other.field -pk`) is a belongs_to: emit both
     // the foreign-key scalar column and the relation accessor field.
-    if let Some(Reference { model: ref_m, field: ref_f }) = field_reference(field) {
+    if let Some(Reference {
+        model: ref_m,
+        field: ref_f,
+    }) = field_reference(field)
+    {
         let fk_col = name.clone();
         let fk_col_str = name.to_string();
         let ref_f_str = ref_f.clone();
         let fk_ty = rust_type_for_ref(field, &ref_f);
-        let target_module = syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
+        let target_module =
+            syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
         let rel_name = syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
         return quote! {
             pub #fk_col: #fk_ty,
@@ -138,10 +140,10 @@ fn rust_type_for_ref(field: &Field, _ref_f: &str) -> TokenStream {
 
 /// Extract the target model name from a `-relation Model` field.
 fn relation_target_entity(field: &Field) -> Option<String> {
-    if let FieldType::InferredRef(s) = &field.ty {
-        if let Some(stripped) = s.strip_prefix("relation:") {
-            return Some(stripped.to_string());
-        }
+    if let FieldType::InferredRef(s) = &field.ty
+        && let Some(stripped) = s.strip_prefix("relation:")
+    {
+        return Some(stripped.to_string());
     }
     if let Some(Reference { model, .. }) = field_reference(field) {
         return Some(model);
@@ -152,7 +154,11 @@ fn relation_target_entity(field: &Field) -> Option<String> {
 /// Map a field to its SeaORM Rust type token.
 fn rust_type_for_field(field: &Field, _target: Target) -> TokenStream {
     // Resolve reference -> foreign key type.
-    if let Some(Reference { model: ref_m, field: ref_f }) = field_reference(field) {
+    if let Some(Reference {
+        model: ref_m,
+        field: ref_f,
+    }) = field_reference(field)
+    {
         // Foreign key type follows the referenced model's key type. We emit the
         // referenced key's Rust type; for simplicity we map common key types.
         // The actual join is expressed via the Relation enum.
@@ -238,7 +244,11 @@ fn ends_with_vowel_y(s: &str) -> bool {
 }
 
 fn ends_with_s(s: &str) -> bool {
-    s.ends_with('s') || s.ends_with("ch") || s.ends_with("sh") || s.ends_with("x") || s.ends_with('z')
+    s.ends_with('s')
+        || s.ends_with("ch")
+        || s.ends_with("sh")
+        || s.ends_with("x")
+        || s.ends_with('z')
 }
 
 fn render_mod_rs(ast: &Ast) -> String {
@@ -254,9 +264,9 @@ fn render_mod_rs(ast: &Ast) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osdl_core::Validator;
     use osdl_core::ast::Ast;
     use osdl_parser::parse;
-    use osdl_core::Validator;
 
     fn compile(src: &str) -> Ast {
         let ast = parse(src).unwrap();
@@ -284,12 +294,36 @@ mod tests {
         let ast = compile("User\n  id uuid -pk\nPost\n  id uuid -pk\n  author User.id\n");
         let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
         let files = renderer.render(&ast).unwrap();
-        let mod_rs = files.iter().find(|(p, _)| p == "entity/mod.rs").unwrap().1.clone();
+        let mod_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/mod.rs")
+            .unwrap()
+            .1
+            .clone();
         assert!(mod_rs.contains("pub mod user;"));
         assert!(mod_rs.contains("pub mod post;"));
-        let post_rs = files.iter().find(|(p, _)| p == "entity/post.rs").unwrap().1.clone();
+        let post_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/post.rs")
+            .unwrap()
+            .1
+            .clone();
         assert!(post_rs.contains("belongs_to"));
         assert!(post_rs.contains("HasOne<super::user::Entity>"));
         assert!(post_rs.contains("#[sea_orm::model]"));
+    }
+
+    #[test]
+    fn snapshot_user_entity() {
+        let ast = compile("User\n  id uuid -pk\n  email string -uniq\n  age int -null\n");
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        insta::assert_snapshot!(user_rs);
     }
 }

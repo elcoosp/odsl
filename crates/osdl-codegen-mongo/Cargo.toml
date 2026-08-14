@@ -1,6 +1,6 @@
 [package]
-name = "osdl-codegen-seaorm"
-description = "SeaORM 2.x renderer for OSDL"
+name = "osdl-codegen-mongo"
+description = "MongoDB 3.x renderer for OSDL"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -14,7 +14,7 @@ syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
 prettyplease.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 osdl-parser.workspace = true
-insta.workspace = true

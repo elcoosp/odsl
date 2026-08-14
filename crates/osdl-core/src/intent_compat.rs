@@ -1,9 +1,10 @@
 //! Target backend identifiers and command-line parsing for `--target`.
 
+use clap::ValueEnum;
 use std::str::FromStr;
 
 /// A code-generation target backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 pub enum Target {
     /// SeaORM entities for SQLite.
     SeaOrmSqlite,
@@ -29,6 +30,7 @@ impl Target {
     }
 }
 
+#[allow(clippy::should_implement_trait)]
 impl FromStr for Target {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -44,12 +46,22 @@ impl FromStr for Target {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr as _;
     #[test]
     fn parse_round_trip() {
-        assert_eq!(Target::from_str("mongo").unwrap(), Target::Mongo);
-        assert_eq!(Target::from_str("seaorm_postgres").unwrap(), Target::SeaOrmPostgres);
-        assert_eq!(Target::from_str("SQLITE").unwrap(), Target::SeaOrmSqlite);
-        assert!(Target::from_str("oracle").is_err());
+        assert_eq!(
+            <Target as FromStr>::from_str("mongo").unwrap(),
+            Target::Mongo
+        );
+        assert_eq!(
+            <Target as FromStr>::from_str("seaorm_postgres").unwrap(),
+            Target::SeaOrmPostgres
+        );
+        assert_eq!(
+            <Target as FromStr>::from_str("SQLITE").unwrap(),
+            Target::SeaOrmSqlite
+        );
+        assert!(<Target as FromStr>::from_str("oracle").is_err());
         assert_eq!(Target::Mongo.as_str(), "mongo");
     }
 }

@@ -41,6 +41,7 @@ impl Lockfile {
     }
 
     /// Parse a lockfile from JSON text.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(text: &str) -> Result<Self, OsdlError> {
         Ok(serde_json::from_str(text)?)
     }
