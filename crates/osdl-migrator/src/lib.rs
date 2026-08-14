@@ -1,0 +1,269 @@
+//! OSDL migration engine.
+//!
+//! The migrator compares two schema snapshots — a *current* [`Lockfile`] (what
+//! is deployed, from `osdl.lock`) and a *target* [`Ast`] (the new `.osdl` after
+//! validation) — and produces a deterministic, ordered list of
+//! [`MigrationOp`]s. Each op carries enough metadata for a backend adapter
+//! (SeaORM `sea-orm-migration`, MongoDB `$jsonschema` validators) to apply it.
+//!
+//! Determinism: ops are emitted in a stable order (drops last, creates first)
+//! so the same schema delta always yields the same migration plan.
+
+use osdl_core::ast::{Ast, LockField, LockModel};
+use osdl_core::errors::OsdlError;
+use osdl_core::lockfile::Lockfile;
+use std::collections::BTreeMap;
+
+/// A single, backend-agnostic schema change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationOp {
+    /// Create a model/collection that did not exist before.
+    CreateModel { model: String },
+    /// Drop a model/collection that no longer exists.
+    DropModel { model: String },
+    /// Add a column/field to an existing model.
+    AddField {
+        model: String,
+        field: String,
+        ty: String,
+        nullable: bool,
+        uniq: bool,
+    },
+    /// Drop a column/field from a model.
+    DropField { model: String, field: String },
+    /// Alter a column/field (type or constraint change).
+    AlterField {
+        model: String,
+        field: String,
+        new_ty: String,
+        nullable: bool,
+        uniq: bool,
+    },
+}
+
+/// The ordered plan describing how to move `from` to `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MigrationPlan {
+    pub ops: Vec<MigrationOp>,
+}
+
+impl MigrationPlan {
+    /// Build a plan by diffing two lockfiles.
+    pub fn diff(from: &Lockfile, to: &Lockfile) -> Self {
+        let mut ops = Vec::new();
+
+        let from_models: BTreeMap<&str, &LockModel> =
+            from.models.iter().map(|m| (m.name.as_str(), m)).collect();
+        let to_models: BTreeMap<&str, &LockModel> =
+            to.models.iter().map(|m| (m.name.as_str(), m)).collect();
+
+        // Created models.
+        for (name, tm) in &to_models {
+            if !from_models.contains_key(name) {
+                ops.push(MigrationOp::CreateModel {
+                    model: (*name).to_string(),
+                });
+            }
+        }
+
+        // Dropped models (emit last so dependents are handled first).
+        // Collected separately and appended after field ops.
+        let mut drops = Vec::new();
+
+        // Compare shared models.
+        for (name, tm) in &to_models {
+            if let Some(fm) = from_models.get(name) {
+                diff_fields(fm, tm, &mut ops);
+            }
+        }
+
+        for (name, _fm) in &from_models {
+            if !to_models.contains_key(name) {
+                drops.push(MigrationOp::DropModel {
+                    model: (*name).to_string(),
+                });
+            }
+        }
+        ops.extend(drops);
+
+        Self { ops }
+    }
+
+    /// Render a stable, human-readable description of the plan.
+    pub fn describe(&self) -> Vec<String> {
+        self.ops
+            .iter()
+            .map(|op| match op {
+                MigrationOp::CreateModel { model } => format!("create model {model}"),
+                MigrationOp::DropModel { model } => format!("drop model {model}"),
+                MigrationOp::AddField { model, field, .. } => {
+                    format!("add field {model}.{field}")
+                }
+                MigrationOp::DropField { model, field } => {
+                    format!("drop field {model}.{field}")
+                }
+                MigrationOp::AlterField { model, field, .. } => {
+                    format!("alter field {model}.{field}")
+                }
+            })
+            .collect()
+    }
+}
+
+fn diff_fields(from: &LockModel, to: &LockModel, ops: &mut Vec<MigrationOp>) {
+    let from_fields: BTreeMap<&str, &LockField> =
+        from.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+    let to_fields: BTreeMap<&str, &LockField> =
+        to.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+
+    for (name, tf) in &to_fields {
+        let uniq = tf.intents.iter().any(|i| i == "-uniq");
+        let nullable = tf.intents.iter().any(|i| i == "-null");
+        match from_fields.get(name) {
+            None => ops.push(MigrationOp::AddField {
+                model: to.name.clone(),
+                field: (*name).to_string(),
+                ty: tf.ty.clone(),
+                nullable,
+                uniq,
+            }),
+            Some(ff) => {
+                let f_uniq = ff.intents.iter().any(|i| i == "-uniq");
+                let f_null = ff.intents.iter().any(|i| i == "-null");
+                if ff.ty != tf.ty || f_uniq != uniq || f_null != nullable {
+                    ops.push(MigrationOp::AlterField {
+                        model: to.name.clone(),
+                        field: (*name).to_string(),
+                        new_ty: tf.ty.clone(),
+                        nullable,
+                        uniq,
+                    });
+                }
+            }
+        }
+    }
+
+    for (name, _ff) in &from_fields {
+        if !to_fields.contains_key(name) {
+            ops.push(MigrationOp::DropField {
+                model: to.name.clone(),
+                field: (*name).to_string(),
+            });
+        }
+    }
+}
+
+/// Convenience: diff a validated target AST against a current lockfile.
+pub fn plan_migration(current: &Lockfile, target_ast: &Ast) -> Result<MigrationPlan, OsdlError> {
+    let target = Lockfile::from_ast(target_ast);
+    Ok(MigrationPlan::diff(current, &target))
+}
+
+/// Read a lockfile from a path (or `None` if it does not exist yet).
+pub fn read_lockfile(path: &std::path::Path) -> Result<Option<Lockfile>, OsdlError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path)?;
+    Ok(Some(Lockfile::from_str(&text)?))
+}
+
+/// Write a lockfile to a path.
+pub fn write_lockfile(path: &std::path::Path, lf: &Lockfile) -> Result<(), OsdlError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, lf.to_string_pretty()?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osdl_core::lockfile::lock_field;
+    use osdl_core::Target;
+
+    fn lf(models: Vec<LockModel>) -> Lockfile {
+        Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models,
+        }
+    }
+
+    #[test]
+    fn detects_added_model_and_field() {
+        let from = lf(vec![]);
+        let to = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![
+                lock_field("id", "uuid", &["-pk"]),
+                lock_field("email", "string", &["-uniq"]),
+            ],
+        }]);
+        let plan = MigrationPlan::diff(&from, &to);
+        assert_eq!(plan.ops.len(), 1);
+        assert_eq!(
+            plan.ops[0],
+            MigrationOp::CreateModel {
+                model: "User".into()
+            }
+        );
+    }
+
+    #[test]
+    fn detects_field_changes() {
+        let from = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![
+                lock_field("id", "uuid", &["-pk"]),
+                lock_field("age", "int", &[]),
+            ],
+        }]);
+        let to = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![
+                lock_field("id", "uuid", &["-pk"]),
+                lock_field("age", "bigint", &["-null"]),
+            ],
+        }]);
+        let plan = MigrationPlan::diff(&from, &to);
+        assert_eq!(
+            plan.ops[0],
+            MigrationOp::AlterField {
+                model: "User".into(),
+                field: "age".into(),
+                new_ty: "bigint".into(),
+                nullable: true,
+                uniq: false,
+            }
+        );
+    }
+
+    #[test]
+    fn drops_come_last() {
+        let from = lf(vec![LockModel {
+            name: "Old".into(),
+            fields: vec![],
+        }]);
+        let to = lf(vec![]);
+        let plan = MigrationPlan::diff(&from, &to);
+        assert_eq!(
+            plan.ops,
+            vec![MigrationOp::DropModel {
+                model: "Old".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn integration_with_ast() {
+        use osdl_parser::parse;
+        let ast = parse("User\n  id uuid -pk\n  email string -uniq\n").unwrap();
+        osdl_core::Validator::validate(&ast, Some(Target::SeaOrmSqlite)).unwrap();
+        let current = lf(vec![]);
+        let plan = plan_migration(&current, &ast).unwrap();
+        assert_eq!(plan.ops.len(), 1);
+        assert!(matches!(plan.ops[0], MigrationOp::CreateModel { .. }));
+    }
+}
