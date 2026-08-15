@@ -66,6 +66,10 @@ enum Command {
         /// Write the new lockfile after computing the plan.
         #[arg(long)]
         apply: bool,
+        /// Apply the plan to a live database at this connection URL
+        /// (`sqlite://`, `postgres://`, `mongodb://`). Implies `--apply`.
+        #[arg(long)]
+        db_url: Option<String>,
     },
 }
 
@@ -80,7 +84,8 @@ fn main() -> Result<(), OsdlError> {
             input,
             target,
             apply,
-        } => cmd_migrate(&input, target, apply),
+            db_url,
+        } => cmd_migrate(&input, target, apply, db_url),
     }
 }
 
@@ -146,7 +151,12 @@ fn cmd_build(
     Ok(())
 }
 
-fn cmd_migrate(input: &std::path::Path, target: Target, apply: bool) -> Result<(), OsdlError> {
+fn cmd_migrate(
+    input: &std::path::Path,
+    target: Target,
+    apply: bool,
+    db_url: Option<String>,
+) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
@@ -158,10 +168,30 @@ fn cmd_migrate(input: &std::path::Path, target: Target, apply: bool) -> Result<(
     for line in plan.describe() {
         println!("  {line}");
     }
+
+    let do_apply = apply || db_url.is_some();
     if plan.ops.is_empty() {
         println!("no changes");
     }
-    if apply {
+
+    // Apply against a live database when a connection URL is provided.
+    if let Some(url) = &db_url {
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| OsdlError::Io(format!("tokio runtime: {e}")))?;
+        let target_lock = Lockfile::from_ast(&ast);
+        let applied = runtime
+            .block_on(osdl_adapter::connect(url))
+            .map_err(|e| OsdlError::Io(format!("connecting to {url}: {e}")))?;
+        let statements = runtime
+            .block_on(applied.apply(&plan, &target_lock))
+            .map_err(|e| OsdlError::Io(format!("applying migration: {e}")))?;
+        for stmt in &statements {
+            println!("  applied: {stmt}");
+        }
+        println!("applied {} change(s) to {}", statements.len(), url);
+    }
+
+    if do_apply {
         write_lockfile(&lock_path, &Lockfile::from_ast(&ast))?;
         tracing::info!(lock = %lock_path.display(), "lockfile updated");
         println!("updated {}", lock_path.display());

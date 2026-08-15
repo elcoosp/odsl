@@ -18,6 +18,7 @@ osdl-codegen.workspace = true
 osdl-codegen-seaorm.workspace = true
 osdl-codegen-mongo.workspace = true
 osdl-migrator.workspace = true
+osdl-adapter.workspace = true
 
 clap.workspace = true
 miette.workspace = true

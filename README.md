@@ -15,7 +15,8 @@ deterministic lockfiles so schema migrations can be auto-diffed.
 | `osdl-codegen-seaorm` | SeaORM 2.0 dense-entity renderer |
 | `osdl-codegen-mongo` | MongoDB Serde + `$jsonSchema` renderer |
 | `osdl-migrator` | AST diff engine + lockfile I/O |
-| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate` |
+| `osdl-adapter` | Live DB adapters: SeaORM (SQLite/Postgres) + MongoDB |
+| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate`, `migrate up` |
 
 ## The OSDL surface syntax
 
@@ -55,7 +56,15 @@ osdl build --target sea-orm-sqlite     # emit SeaORM entities
 osdl build --target mongo               # emit Mongo structs + jsonSchema
 osdl migrate                           # print the migration plan
 osdl migrate --apply                    # print plan and update osdl.lock
+osdl migrate up --db-url sqlite:///app.db?mode=rwc   # apply to a live DB
+osdl migrate up --db-url postgres://localhost/app    # ...or Postgres
+osdl migrate up --db-url mongodb://localhost:27017/app  # ...or MongoDB
 ```
+
+`migrate up` connects to the database named by `--db-url`, applies every op in
+the diff (CREATE/ALTER/DROP for SQL; `createCollection` / `collMod` validator
+for Mongo), then writes the new `osdl.lock`. Re-running it is a no-op once the
+lockfile matches the schema.
 
 ## Building & testing
 
@@ -74,5 +83,10 @@ cargo fmt  --all
 * **Deterministic lockfiles** — two structurally-equal schemas produce
   byte-identical `osdl.lock` files (sorted projection + SHA-256), which is
   what makes auto-migration reliable.
+* **Live execution** — `osdl-adapter` turns the backend-agnostic
+  `MigrationPlan` into real DDL: SeaORM `execute_unprepared` for SQLite/
+  Postgres, and MongoDB `createCollection`/`collMod` validators. Table and
+  collection names are shared with the renderers via `osdl_core::naming`, so
+  generated code and migrations always agree.
 * **DRY/KISS** — the `CodeRenderer` trait is the only extension point; adding
   a backend means implementing one `render` method.
