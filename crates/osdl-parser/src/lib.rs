@@ -10,7 +10,7 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, Field, Model};
+use osdl_core::ast::{Ast, Field, Model, ModelIndex};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
 use pest::Parser;
@@ -95,8 +95,14 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
                 fields: la_arena::Arena::new(),
                 field_index: vec![],
                 line: pl.line_no,
+                indexes: vec![],
             };
-            let field_tokens: Vec<_> = pl.tokens.iter().skip(1).cloned().collect();
+            // Model-level composite indexes: `-index a,b` / `-uniq a,b`
+            // (may appear on the model-declaration line or as standalone lines).
+            let model_tokens: Vec<_> = pl.tokens.iter().skip(1).cloned().collect();
+            capture_model_index(&mut model, &model_tokens);
+
+            let field_tokens: Vec<_> = model_tokens;
             if !field_tokens.is_empty() {
                 add_field_from_tokens(
                     &mut model,
@@ -120,6 +126,11 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
                         .with_span(span_at(src, pl.byte_start, pl.byte_end, pl.line_no), src),
                     )),
                 };
+            // A standalone indented line that begins with `-index`/`-uniq` is a
+            // model-level composite-index directive, not a field.
+            if capture_model_index(m, &pl.tokens) {
+                continue;
+            }
             add_field_from_tokens(
                 m,
                 &pl.tokens,
@@ -136,6 +147,39 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
     }
 
     Ok(ast)
+}
+
+fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
+    // A model-level composite-index directive: `-index a,b` / `-uniq a,b`.
+    // Returns true if the tokens were consumed as such (so the caller should
+    // not treat the line as a field).
+    let (Some(RawToken::Flag(f)), Some(RawToken::Word(w))) = (tokens.first(), tokens.get(1)) else {
+        return false;
+    };
+    let unique = match f.as_str() {
+        "-uniq" | "-unique" => true,
+        "-index" | "-idx" => false,
+        _ => return false,
+    };
+    let fields: Vec<String> = w
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if fields.is_empty() {
+        return false;
+    }
+    let idx_name = format!(
+        "{}_{}",
+        if unique { "uniq" } else { "idx" },
+        fields.join("_")
+    );
+    model.indexes.push(ModelIndex {
+        name: idx_name,
+        fields,
+        unique,
+    });
+    true
 }
 
 fn add_field_from_tokens(
@@ -385,6 +429,25 @@ mod enum_tests {
         assert_eq!(created.default_value.as_deref(), Some("now"));
         let bio = m.fields().find(|(_, fl)| fl.name == "bio").unwrap().1;
         assert_eq!(bio.default_value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn parses_composite_model_indexes() {
+        let src = "User\n  id uuid -pk\n  tenant_id uuid\n  email string\n  -uniq tenant_id,email\n  -index tenant_id,created_at\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let uniq = m.indexes.iter().find(|i| i.unique).unwrap();
+        assert_eq!(
+            uniq.fields,
+            vec!["tenant_id".to_string(), "email".to_string()]
+        );
+        assert_eq!(uniq.name, "uniq_tenant_id_email");
+        let idx = m.indexes.iter().find(|i| !i.unique).unwrap();
+        assert_eq!(
+            idx.fields,
+            vec!["tenant_id".to_string(), "created_at".to_string()]
+        );
     }
 
     #[test]

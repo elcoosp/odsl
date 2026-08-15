@@ -45,6 +45,10 @@ impl CodeRenderer for MongoRenderer {
         }
         let mod_rs = render_mod_rs(ast);
         files.push(("entity/mod.rs".to_string(), mod_rs));
+        // Real MongoDB index definitions (create_index API), covering both
+        // field-level `-index`/`-uniq` and model-level composite constraints.
+        let indexes = render_indexes(ast);
+        files.push(("entity/indexes.rs".to_string(), indexes));
         Ok(files)
     }
 }
@@ -227,6 +231,65 @@ fn ends_with_s(s: &str) -> bool {
         || s.ends_with('z')
 }
 
+/// Generate real MongoDB index definitions (using the driver's `IndexModel`
+/// + `create_index` API) for every model. Covers:
+/// - field-level `-uniq`  -> single-field unique index
+/// - field-level `-index` -> single-field (non-unique) index
+/// - model-level `-uniq a,b` / `-index a,b` -> composite (optionally unique) index
+fn render_indexes(ast: &Ast) -> String {
+    let mut specs: Vec<TokenStream> = Vec::new();
+    for (_midx, model) in ast.models() {
+        let collection = to_snake_plural(&model.name);
+        // Field-level indexes.
+        for (_fidx, field) in model.fields() {
+            let name = &field.name;
+            let unique = field.has(Intent::Uniq);
+            let is_index = field.has(Intent::Index);
+            if !unique && !is_index {
+                continue;
+            }
+            let kind = if unique { "uniq" } else { "idx" };
+            let idx_name = format!("{collection}_{kind}_{name}");
+            specs.push(index_spec(&idx_name, &[name.to_string()], unique));
+        }
+        // Model-level composite indexes.
+        for index in &model.indexes {
+            specs.push(index_spec(&index.name, &index.fields, index.unique));
+        }
+    }
+
+    let tokens = quote! {
+        use mongodb::IndexModel;
+        use mongodb::options::IndexOptions;
+
+        /// All index models for this schema. Apply them with
+        /// `db.collection(coll).create_index(model, None).await`.
+        pub fn index_models() -> Vec<IndexModel> {
+            vec![
+                #(#specs),*
+            ]
+        }
+    };
+    format_tokens(tokens)
+}
+
+/// Build a single `IndexModel` expression for the given key fields.
+fn index_spec(name: &str, fields: &[String], unique: bool) -> TokenStream {
+    let keys: Vec<TokenStream> = fields.iter().map(|f| quote! { #f: 1 }).collect();
+    let unique_lit = unique;
+    quote! {
+        IndexModel::builder()
+            .keys(mongodb::bson::doc! { #(#keys),* })
+            .options(
+                IndexOptions::builder()
+                    .name(#name.to_string())
+                    .unique(#unique_lit)
+                    .build(),
+            )
+            .build()
+    }
+}
+
 fn render_mod_rs(ast: &Ast) -> String {
     let mut lines: Vec<String> = Vec::new();
     for (_idx, model) in ast.models() {
@@ -280,6 +343,29 @@ mod tests {
             .clone();
         let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
         assert_eq!(v["$jsonSchema"]["properties"]["age"]["default"], "0");
+    }
+
+    #[test]
+    fn renders_indexes_rs() {
+        let ast = compile(
+            "User\n  id uuid -pk\n  tenant_id uuid\n  email string -uniq\n  status string -index\n  -uniq tenant_id,email\n",
+        );
+        let renderer = MongoRenderer::new(Target::Mongo);
+        let files = renderer.render(&ast).unwrap();
+        let idx = files
+            .iter()
+            .find(|(p, _)| p == "entity/indexes.rs")
+            .unwrap()
+            .1
+            .clone();
+        // field-level unique
+        assert!(idx.contains("IndexModel::builder()"));
+        assert!(idx.contains("users_uniq_email"));
+        // field-level index
+        assert!(idx.contains("users_idx_status"));
+        // model-level composite unique
+        assert!(idx.contains("uniq_tenant_id_email"));
+        assert!(idx.contains(".unique(true)"));
     }
 
     #[test]

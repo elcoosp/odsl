@@ -202,6 +202,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("email", "string", &["-uniq"]),
             ],
+            indexes: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert_eq!(plan.ops.len(), 1);
@@ -221,6 +222,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("age", "int", &[]),
             ],
+            indexes: vec![],
         }]);
         let to = lf(vec![LockModel {
             name: "User".into(),
@@ -228,6 +230,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("age", "bigint", &["-null"]),
             ],
+            indexes: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert_eq!(
@@ -247,6 +250,7 @@ mod tests {
         let from = lf(vec![LockModel {
             name: "Old".into(),
             fields: vec![],
+            indexes: vec![],
         }]);
         let to = lf(vec![]);
         let plan = MigrationPlan::diff(&from, &to);

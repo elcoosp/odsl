@@ -109,6 +109,7 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         user.add_field(Field {
             name: "id".into(),
@@ -162,6 +163,7 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         user.add_field(Field {
             name: "status".into(),
@@ -178,5 +180,59 @@ mod tests {
         assert_eq!(lf, parsed);
         let got = &parsed.models[0].fields[0].enum_variants;
         assert_eq!(got, &vec!["active".to_string(), "inactive".to_string()]);
+    }
+
+    #[test]
+    fn model_indexes_survive_lockfile_round_trip() {
+        use crate::ast::{Ast, Field, Model, ModelIndex};
+        let mut ast = Ast::new();
+        let mut user = Model {
+            name: "User".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+        };
+        user.add_field(Field {
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            line: 2,
+        });
+        user.add_field(Field {
+            name: "tenant_id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![],
+            enum_variants: vec![],
+            default_value: None,
+            line: 3,
+        });
+        user.add_field(Field {
+            name: "email".into(),
+            ty: FieldType::Scalar(ScalarType::String),
+            intents: vec![],
+            enum_variants: vec![],
+            default_value: None,
+            line: 4,
+        });
+        user.indexes.push(ModelIndex {
+            name: "uniq_tenant_id_email".into(),
+            fields: vec!["tenant_id".into(), "email".into()],
+            unique: true,
+        });
+        ast.add_model(user);
+        let lf = Lockfile::from_ast(&ast);
+        let text = lf.to_string_pretty().unwrap();
+        let parsed = Lockfile::from_str(&text).unwrap();
+        assert_eq!(lf, parsed);
+        let got = &parsed.models[0].indexes[0];
+        assert_eq!(got.name, "uniq_tenant_id_email");
+        assert_eq!(
+            got.fields,
+            vec!["tenant_id".to_string(), "email".to_string()]
+        );
+        assert!(got.unique);
     }
 }

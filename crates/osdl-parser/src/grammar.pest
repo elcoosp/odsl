@@ -26,7 +26,7 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { name ~ (sp ~ token)* | comment_part | "" }
+body    = { name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
 
 indent  = @{ (" " | "\t")* }
 

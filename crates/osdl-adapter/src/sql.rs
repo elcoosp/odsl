@@ -228,6 +228,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("email", "string", &["-uniq"]),
             ],
+            indexes: vec![],
         }
     }
 
@@ -258,6 +259,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("author", "User.id", &[]),
             ],
+            indexes: vec![],
         };
         let sql = create_table_sql(SqlDialect::Postgres, &m);
         assert!(sql.contains("REFERENCES \"users\"(\"id\")"));

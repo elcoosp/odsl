@@ -34,6 +34,7 @@ impl Validator {
         Self::resolve_references(ast)?;
         Self::check_keys(ast)?;
         Self::check_intent_compat(ast)?;
+        Self::check_model_indexes(ast)?;
         if let Some(t) = target {
             Self::check_target_compat(ast, t)?;
             Self::prevent_cycles(ast)?;
@@ -113,6 +114,24 @@ impl Validator {
                         return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
                             intent: "-default now".into(),
                             ty: field.type_keyword(),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-007 (model-level): every field referenced by a composite
+    /// `-index`/`-uniq` constraint must exist on the model.
+    fn check_model_indexes(ast: &Ast) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            for index in &model.indexes {
+                for field in &index.fields {
+                    if model.field_by_name(field).is_none() {
+                        return Err(OsdlError::compile(CompileErrorKind::UnresolvedReference {
+                            from: format!("{}.{}", model.name, index.name),
+                            target: field.clone(),
                         }));
                     }
                 }

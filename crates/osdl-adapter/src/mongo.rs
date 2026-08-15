@@ -190,6 +190,7 @@ mod tests {
                 lock_field("email", "string", &["-uniq"]),
                 lock_field("age", "int", &["-null"]),
             ],
+            indexes: vec![],
         }
     }
 

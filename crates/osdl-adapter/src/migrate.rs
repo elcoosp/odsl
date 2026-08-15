@@ -252,6 +252,26 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                     }
                 }
             }
+            // Model-level composite indexes (`-index a,b` / `-uniq a,b`).
+            if let Some(lm) = &lm {
+                for index in &lm.indexes {
+                    let i = idx_binds.len();
+                    let unique_lit = index.unique;
+                    let mut binds = format!(
+                        "        let mut ix{i} = Index::create();\n        ix{i}.name(\"{name}\").table(\"{tbl}\")",
+                        name = index.name
+                    );
+                    for f in &index.fields {
+                        binds.push_str(&format!("\n        ix{i}.col(\"{f}\")"));
+                    }
+                    if unique_lit {
+                        binds.push_str(&format!("\n        ix{i}.unique()"));
+                    }
+                    binds.push(';');
+                    idx_binds.push(binds);
+                    idx_calls.push(format!("        manager.create_index(ix{i}).await?;"));
+                }
+            }
             let mut lines: Vec<String> = Vec::new();
             for b in &fk_binds {
                 lines.push(b.clone());
@@ -454,6 +474,13 @@ fn seaorm_down_stmt(op: &MigrationOp, target: &Lockfile) -> Option<String> {
                         ));
                     }
                 }
+                // Model-level composite indexes.
+                for index in &lm.indexes {
+                    lines.push(format!(
+                        "        manager.drop_index(\n            Index::drop()\n                .name(\"{name}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;",
+                        name = index.name
+                    ));
+                }
             }
             lines.push(format!(
                 "        manager.drop_table(\n            Table::drop()\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
@@ -628,6 +655,7 @@ mod tests {
                     lock_field("id", "uuid", &["-pk"]),
                     lock_field("email", "string", &["-uniq"]),
                 ],
+                indexes: vec![],
             }],
         }
     }
@@ -680,6 +708,7 @@ mod tests {
                 LockModel {
                     name: "User".into(),
                     fields: vec![lock_field("id", "uuid", &["-pk"])],
+                    indexes: vec![],
                 },
                 LockModel {
                     name: "Post".into(),
@@ -687,6 +716,7 @@ mod tests {
                         lock_field("id", "uuid", &["-pk"]),
                         lock_field("author", "User.id", &[]),
                     ],
+                    indexes: vec![],
                 },
             ],
         };
@@ -703,6 +733,39 @@ mod tests {
     }
 
     #[test]
+    fn seaorm_migration_emits_composite_model_index() {
+        let target = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![lock_field("id", "uuid", &["-pk"])],
+                indexes: vec![osdl_core::ast::LockIndex {
+                    name: "uniq_tenant_id_email".into(),
+                    fields: vec!["tenant_id".into(), "email".into()],
+                    unique: true,
+                }],
+            }],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "User".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        // Composite index via SeaQuery Index::create() with multiple .col().
+        assert!(out.contains("Index::create()"));
+        assert!(out.contains("uniq_tenant_id_email"));
+        assert!(out.contains(".col(\"tenant_id\")"));
+        assert!(out.contains(".col(\"email\")"));
+        assert!(out.contains(".unique()"));
+        assert!(out.contains("manager.create_index("));
+        // Down drops it via Index::drop().
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
     fn seaorm_migration_emits_secondary_index() {
         let target = Lockfile {
             version: Lockfile::VERSION,
@@ -714,6 +777,7 @@ mod tests {
                     lock_field("email", "string", &["-uniq"]),
                     lock_field("name", "string", &["-index"]),
                 ],
+                indexes: vec![],
             }],
         };
         let plan = MigrationPlan {
@@ -743,6 +807,7 @@ mod tests {
                     lock_field("id", "uuid", &["-pk"]),
                     lock_field("name", "string", &["-index"]),
                 ],
+                indexes: vec![],
             }],
         };
         let plan = MigrationPlan {

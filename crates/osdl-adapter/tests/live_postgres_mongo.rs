@@ -51,6 +51,7 @@ async fn postgres_apply_create_model_live() {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("email", "string", &["-uniq"]),
             ],
+            indexes: vec![],
         }],
     };
     let plan = MigrationPlan {
@@ -84,6 +85,7 @@ async fn mongo_apply_create_model_live() {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("email", "string", &["-uniq"]),
             ],
+            indexes: vec![],
         }],
     };
     let plan = MigrationPlan {

@@ -56,6 +56,20 @@ pub struct Model {
     pub fields: Arena<Field>,
     pub field_index: Vec<(String, FieldIdx)>,
     pub line: usize,
+    /// Model-level composite indexes (`-index a,b`) and unique constraints
+    /// (`-uniq a,b`). Field-level `-index`/`-uniq` are stored on the field.
+    pub indexes: Vec<ModelIndex>,
+}
+
+/// A composite index/unique constraint declared at the model level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelIndex {
+    /// Index name, e.g. `idx_users_tenant_email`.
+    pub name: String,
+    /// Referenced field names (order matters).
+    pub fields: Vec<String>,
+    /// When true the constraint is UNIQUE.
+    pub unique: bool,
 }
 
 impl Model {
@@ -114,6 +128,15 @@ impl Field {
 pub struct LockModel {
     pub name: String,
     pub fields: Vec<LockField>,
+    /// Model-level composite indexes / unique constraints.
+    pub indexes: Vec<LockIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockIndex {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub unique: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,9 +184,20 @@ impl Ast {
                     })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
+                let mut indexes: Vec<LockIndex> = m
+                    .indexes
+                    .iter()
+                    .map(|i| LockIndex {
+                        name: i.name.clone(),
+                        fields: i.fields.clone(),
+                        unique: i.unique,
+                    })
+                    .collect();
+                indexes.sort_by(|a, b| a.name.cmp(&b.name));
                 LockModel {
                     name: m.name.clone(),
                     fields,
+                    indexes,
                 }
             })
             .collect();
@@ -190,6 +224,7 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         user.add_field(Field {
             name: "id".into(),
@@ -214,6 +249,7 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         a.add_field(Field {
             name: "name".into(),
@@ -228,6 +264,7 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         b.add_field(Field {
             name: "id".into(),
