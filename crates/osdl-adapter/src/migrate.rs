@@ -203,11 +203,14 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
             let mut cols: Vec<String> = Vec::new();
             let mut fk_binds: Vec<String> = Vec::new();
             let mut fk_refs: Vec<String> = Vec::new();
+            let mut idx_binds: Vec<String> = Vec::new();
+            let mut idx_calls: Vec<String> = Vec::new();
             if let Some(lm) = lm {
                 for f in &lm.fields {
                     let is_pk = f.intents.iter().any(|x| x == "-pk");
                     let nullable = f.intents.iter().any(|x| x == "-null");
                     let uniq = f.intents.iter().any(|x| x == "-uniq");
+                    let has_index = f.intents.iter().any(|x| x == "-index");
                     if f.ty.contains('.') {
                         // Reference: column type follows the referenced PK.
                         // Emit the FK inline in Table::create() so it works on
@@ -238,10 +241,22 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                     } else {
                         cols.push(seaorm_column_for(&f.name, &f.ty, nullable, uniq));
                     }
+                    if has_index && !is_pk {
+                        // Secondary (non-unique) index via SeaQuery Index::create().
+                        let i = idx_binds.len();
+                        idx_binds.push(format!(
+                            "        let mut ix{i} = Index::create();\n        ix{i}.name(\"idx_{tbl}_{}\").table(\"{}\").col(\"{}\");",
+                            f.name, tbl, f.name
+                        ));
+                        idx_calls.push(format!("        manager.create_index(ix{i}).await?;"));
+                    }
                 }
             }
             let mut lines: Vec<String> = Vec::new();
             for b in &fk_binds {
+                lines.push(b.clone());
+            }
+            for b in &idx_binds {
                 lines.push(b.clone());
             }
             lines.push(format!(
@@ -254,6 +269,9 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                 lines.push(format!("                {r}"));
             }
             lines.push("                .to_owned()\n        ).await?;".to_string());
+            for c in &idx_calls {
+                lines.push(c.clone());
+            }
             lines
         }
         MigrationOp::AddField {
@@ -288,10 +306,21 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                     ),
                 ]
             } else {
-                vec![format!(
+                let mut stmts = vec![format!(
                     "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .add_column({})\n                .to_owned()\n        ).await?;",
                     seaorm_column_for(field, ty, *nullable, *uniq)
-                )]
+                )];
+                let wants_index = target
+                    .model_by_name(model)
+                    .and_then(|m| m.fields.iter().find(|f| f.name == *field))
+                    .map(|f| f.intents.iter().any(|i| i == "-index"))
+                    .unwrap_or(false);
+                if !*uniq && wants_index {
+                    stmts.push(format!(
+                        "        let mut ix = Index::create();\n        ix.name(\"idx_{tbl}_{field}\").table(\"{tbl}\").col(\"{field}\");\n        manager.create_index(ix).await?;"
+                    ));
+                }
+                stmts
             }
         }
         MigrationOp::DropField { model, field } => {
@@ -366,7 +395,7 @@ fn render_seaorm_migration(plan: &MigrationPlan, target: &Lockfile) -> String {
             up_lines.push(s);
         }
         // Down is the inverse in reverse order.
-        if let Some(d) = seaorm_down_stmt(op) {
+        if let Some(d) = seaorm_down_stmt(op, target) {
             down_lines.push(d);
         }
     }
@@ -406,20 +435,47 @@ impl MigrationTrait for Migration {{
 }
 
 /// Inverse SeaQuery statement for one op (down section).
-fn seaorm_down_stmt(op: &MigrationOp) -> Option<String> {
+fn seaorm_down_stmt(op: &MigrationOp, target: &Lockfile) -> Option<String> {
     use crate::naming::table_name;
     match op {
         MigrationOp::CreateModel { model } => {
             let tbl = table_name(model);
-            Some(format!(
+            // Drop any secondary indexes first, then the table.
+            let lm = target.model_by_name(model);
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(lm) = lm {
+                for f in &lm.fields {
+                    if f.intents.iter().any(|i| i == "-index")
+                        && !f.intents.iter().any(|i| i == "-pk")
+                    {
+                        lines.push(format!(
+                            "        manager.drop_index(\n            Index::drop()\n                .name(\"idx_{tbl}_{}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;",
+                            f.name
+                        ));
+                    }
+                }
+            }
+            lines.push(format!(
                 "        manager.drop_table(\n            Table::drop()\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
-            ))
+            ));
+            Some(lines.join("\n"))
         }
         MigrationOp::AddField { model, field, .. } => {
             let tbl = table_name(model);
-            Some(format!(
+            let wants_index = target
+                .model_by_name(model)
+                .and_then(|m| m.fields.iter().find(|f| f.name == *field))
+                .map(|f| f.intents.iter().any(|i| i == "-index"))
+                .unwrap_or(false);
+            let mut lines = vec![format!(
                 "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .drop_column(\"{field}\")\n                .to_owned()\n        ).await?;"
-            ))
+            )];
+            if wants_index {
+                lines.push(format!(
+                    "        manager.drop_index(\n            Index::drop()\n                .name(\"idx_{tbl}_{field}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
+                ));
+            }
+            Some(lines.join("\n"))
         }
         MigrationOp::DropField { .. } => None,
         MigrationOp::AlterField { .. } => {
@@ -644,6 +700,127 @@ mod tests {
         assert!(out.contains(".from(\"posts\", \"author\")"));
         assert!(out.contains(".to(\"users\", \"id\")"));
         assert!(!out.contains("execute_unprepared"));
+    }
+
+    #[test]
+    fn seaorm_migration_emits_secondary_index() {
+        let target = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                    lock_field("name", "string", &["-index"]),
+                ],
+            }],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "User".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        // Index created via SeaQuery Index::create() (not raw SQL).
+        assert!(out.contains("Index::create()"));
+        assert!(out.contains("idx_users_name"));
+        assert!(out.contains("manager.create_index("));
+        assert!(!out.contains("execute_unprepared"));
+        // Down drops the index via Index::drop().
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
+    fn seaorm_addfield_emits_secondary_index() {
+        let target = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("name", "string", &["-index"]),
+                ],
+            }],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::AddField {
+                model: "User".into(),
+                field: "name".into(),
+                ty: "string".into(),
+                nullable: false,
+                uniq: false,
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(
+            out.contains("Index::create()"),
+            "up missing index create:\n{out}"
+        );
+        assert!(out.contains("idx_users_name"));
+        assert!(out.contains("manager.create_index("));
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
+    fn cli_style_addfield_index_via_from_ast() {
+        // Mirrors cmd_migrate_create: parse -> Lockfile::from_ast -> render.
+        let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
+        let mut ast = osdl_parser::parse(src).unwrap();
+        osdl_core::Validator::validate(&mut ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
+        let target = Lockfile::from_ast(&ast);
+        // Sanity: the parsed target carries -index on name.
+        let name_intents = target
+            .model_by_name("User")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "name")
+            .unwrap()
+            .intents
+            .clone();
+        assert!(
+            name_intents.iter().any(|i| i == "-index"),
+            "target intents for name: {name_intents:?}"
+        );
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::AddField {
+                model: "User".into(),
+                field: "name".into(),
+                ty: "string".into(),
+                nullable: false,
+                uniq: false,
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(
+            out.contains("Index::create()"),
+            "up missing index (from_ast path):\n{out}"
+        );
+        assert!(out.contains("idx_users_name"));
+    }
+
+    #[test]
+    fn cli_style_full_pipeline_index() {
+        // Full cmd_migrate_create path: parse -> plan_migration(empty, ast) -> render.
+        let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
+        let mut ast = osdl_parser::parse(src).unwrap();
+        osdl_core::Validator::validate(&mut ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
+        let current = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![],
+        };
+        let plan = osdl_migrator::plan_migration(&current, &ast).unwrap();
+        let target = Lockfile::from_ast(&ast);
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(
+            out.contains("Index::create()") && out.contains("idx_users_name"),
+            "full pipeline missing index:\n{out}"
+        );
     }
 
     #[test]

@@ -95,6 +95,8 @@ pub enum Intent {
     Null,
     /// Full-text search index.
     Fulltext,
+    /// Secondary (non-unique) index.
+    Index,
     /// Timezone-aware timestamp.
     Tz,
     /// Auto-incrementing integer key.
@@ -111,6 +113,7 @@ impl Intent {
             Intent::Uniq => "-uniq",
             Intent::Null => "-null",
             Intent::Fulltext => "-fulltext",
+            Intent::Index => "-index",
             Intent::Tz => "-tz",
             Intent::Auto => "-auto",
             Intent::Relation => "-relation",

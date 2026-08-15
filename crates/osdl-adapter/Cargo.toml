@@ -24,3 +24,4 @@ tracing.workspace = true
 tokio.workspace = true
 osdl-core.workspace = true
 osdl-migrator.workspace = true
+osdl-parser.workspace = true
