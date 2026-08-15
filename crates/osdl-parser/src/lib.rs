@@ -10,7 +10,7 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, Field, Model, ModelIndex};
+use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
 use pest::Parser;
@@ -37,6 +37,9 @@ enum RawToken {
     Word(String),
     /// A `use path::to::module` declaration (module import).
     Use(String),
+    /// A `type Name = base -intents...` declaration (custom value object).
+    /// `rhs` holds the parsed RHS tokens (base scalar + intents/check).
+    TypeDecl { name: String, rhs: Vec<RawToken> },
     /// A quoted string literal (`"..."`); the inner content (quotes stripped)
     /// is stored verbatim, e.g. `-default ""` yields `Quoted("")`.
     Quoted(String),
@@ -79,6 +82,23 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
         }
     }
 
+    // Pre-pass: collect custom type declarations (they may be referenced by
+    // fields declared earlier in the file, so gather them up front).
+    let mut custom_types: std::collections::HashMap<String, CustomType> = Default::default();
+    for pl in &parsed {
+        if pl.indent == 0 {
+            if let Some(RawToken::TypeDecl { name, rhs }) = pl.tokens.first() {
+                let ct = custom_type_from_tokens(name, rhs, src, pl.byte_start, pl.byte_end, pl.line_no)?
+                    .ok_or_else(|| {
+                        OsdlError::Parse(ParseError::new(format!(
+                            "invalid custom type declaration for `{name}`"
+                        )))
+                    })?;
+                custom_types.insert(name.clone(), ct);
+            }
+        }
+    }
+
     let mut ast = Ast::new();
     let mut current_model: Option<Model> = None;
     let mut uses: Vec<String> = Vec::new();
@@ -92,6 +112,12 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
             // A `use` declaration is not a model.
             if let Some(RawToken::Use(path)) = pl.tokens.first() {
                 uses.push(path.clone());
+                continue;
+            }
+            // A `type` declaration is not a model.
+            if let Some(RawToken::TypeDecl { name, .. }) = pl.tokens.first() {
+                let ct = custom_types.get(name).cloned().expect("collected above");
+                ast.add_custom_type(ct);
                 continue;
             }
             if let Some(m) = current_model.take() {
@@ -124,6 +150,7 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                     &mut model,
                     &field_tokens,
                     &known_models,
+                    &custom_types,
                     pl.line_no,
                     pl.byte_start,
                     pl.byte_end,
@@ -151,6 +178,7 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 m,
                 &pl.tokens,
                 &known_models,
+                &custom_types,
                 pl.line_no,
                 pl.byte_start,
                 pl.byte_end,
@@ -292,6 +320,7 @@ fn add_field_from_tokens(
     model: &mut Model,
     tokens: &[RawToken],
     known_models: &HashSet<String>,
+    custom_types: &std::collections::HashMap<String, CustomType>,
     line_no: usize,
     byte_start: usize,
     byte_end: usize,
@@ -325,6 +354,9 @@ fn add_field_from_tokens(
     let mut capturing_m2m = false;
     let mut capturing_check = false;
     let mut capturing_polymorphic = false;
+    // If the field's type is a custom type, record its name and inherit its
+    // base scalar + constraints.
+    let mut custom_type: Option<String> = None;
 
     for tok in iter {
         match tok {
@@ -413,6 +445,28 @@ fn add_field_from_tokens(
                     m2m_target = Some(w.trim().to_string());
                     continue;
                 }
+                if let Some(ct) = custom_types.get(w) {
+                    // This field is declared with a custom type: expand to its
+                    // base scalar and inherit its intents/check. The field
+                    // remains a normal scalar but carries the custom-type name.
+                    custom_type = Some(ct.name.clone());
+                    base = Some(ct.base);
+                    for intent in &ct.intents {
+                        if !intents.contains(intent) {
+                            intents.push(*intent);
+                        }
+                    }
+                    if ct.enum_variants.is_empty() {
+                        enum_variants = ct.enum_variants.clone();
+                    }
+                    if ct.default_value.is_some() {
+                        default_value = ct.default_value.clone();
+                    }
+                    if ct.check_expr.is_some() {
+                        check_expr = ct.check_expr.clone();
+                    }
+                    continue;
+                }
                 if let Some(target) = w.strip_prefix("relation:") {
                     intents.push(Intent::Relation);
                     ty = Some(FieldType::InferredRef(format!("relation:{target}")));
@@ -461,9 +515,112 @@ fn add_field_from_tokens(
         m2m_target,
         check_expr,
         polymorphic_targets,
+        custom_type,
         line: line_no,
     });
     Ok(())
+}
+
+/// Build a [`CustomType`] from the RHS tokens of a `type X = ...` declaration.
+/// Returns `None` if the RHS has no base scalar (caller turns that into an error).
+fn custom_type_from_tokens(
+    name: &str,
+    rhs: &[RawToken],
+    src: &str,
+    byte_start: usize,
+    byte_end: usize,
+    line_no: usize,
+) -> Result<Option<CustomType>, OsdlError> {
+    let mut base: Option<ScalarType> = None;
+    let mut intents: Vec<Intent> = Vec::new();
+    let mut enum_variants: Vec<String> = Vec::new();
+    let mut default_value: Option<String> = None;
+    let mut check_expr: Option<String> = None;
+    let mut capturing_enum = false;
+    let mut capturing_default = false;
+    let mut capturing_check = false;
+
+    for tok in rhs {
+        match tok {
+            RawToken::Flag(f) => {
+                if f == "-enum" {
+                    intents.push(Intent::Enum);
+                    capturing_enum = true;
+                    continue;
+                }
+                if f == "-default" {
+                    intents.push(Intent::Default);
+                    capturing_default = true;
+                    continue;
+                }
+                if f == "-check" {
+                    intents.push(Intent::Check);
+                    capturing_check = true;
+                    continue;
+                }
+                let intent = parse_intent(f).ok_or_else(|| {
+                    OsdlError::Parse(
+                        ParseError::new(format!("unknown intent flag `{f}` in type `{name}`"))
+                            .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                    )
+                })?;
+                intents.push(intent);
+            }
+            RawToken::Word(w) => {
+                if capturing_enum {
+                    capturing_enum = false;
+                    enum_variants = w.split(',').map(|s| s.trim().to_string()).collect();
+                    continue;
+                }
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(w.trim().to_string());
+                    continue;
+                }
+                if capturing_check {
+                    capturing_check = false;
+                    check_expr = Some(w.trim().to_string());
+                    continue;
+                }
+                if let Some(s) = ScalarType::from_keyword(w) {
+                    base = Some(s);
+                } else {
+                    return Err(OsdlError::Parse(
+                        ParseError::new(format!(
+                            "custom type `{name}` must be based on a scalar, got `{w}`"
+                        ))
+                        .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                    ));
+                }
+            }
+            RawToken::Quoted(q) => {
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(q.clone());
+                    continue;
+                }
+                if capturing_check {
+                    capturing_check = false;
+                    check_expr = Some(q.clone());
+                    continue;
+                }
+                base = None; // invalid; error below
+            }
+            _ => {}
+        }
+    }
+
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    Ok(Some(CustomType {
+        name: name.to_string(),
+        base,
+        intents,
+        enum_variants,
+        default_value,
+        check_expr,
+    }))
 }
 
 fn parse_intent(flag: &str) -> Option<Intent> {
@@ -557,6 +714,53 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                                 }
                             }
                             tokens.push(RawToken::Use(path));
+                        }
+                        Rule::type_decl => {
+                            // `type_kw ~ sp ~ ident ~ sp ~ equals ~ sp ~ type_rhs`
+                            let mut name = String::new();
+                            let mut rhs: Vec<RawToken> = Vec::new();
+                            for u in b.into_inner() {
+                                match u.as_rule() {
+                                    Rule::ident => name = u.as_str().to_string(),
+                                    Rule::type_rhs => {
+                                        for t in u.into_inner() {
+                                            match t.as_rule() {
+                                                Rule::word => {
+                                                    rhs.push(RawToken::Word(t.as_str().to_string()))
+                                                }
+                                                Rule::token => {
+                                                    let inner = t.into_inner().next().unwrap();
+                                                    match inner.as_rule() {
+                                                        Rule::flag => rhs.push(RawToken::Flag(
+                                                            inner.as_str().to_string(),
+                                                        )),
+                                                        Rule::reference => {
+                                                            let (m, f) = split_reference(inner.as_str());
+                                                            rhs.push(RawToken::Reference {
+                                                                model: m,
+                                                                field: f,
+                                                            });
+                                                        }
+                                                        Rule::quoted => {
+                                                            let s = inner.as_str();
+                                                            let q = if s.len() >= 2 {
+                                                                &s[1..s.len() - 1]
+                                                            } else {
+                                                                ""
+                                                            };
+                                                            rhs.push(RawToken::Quoted(q.to_string()));
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            tokens.push(RawToken::TypeDecl { name, rhs });
                         }
                         _ => {}
                     }

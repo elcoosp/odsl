@@ -242,3 +242,40 @@ fn use_cycle_is_safe() {
     assert!(project.ast.model_by_name("B").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- Custom types / value objects (`type X = ...`) ---
+
+#[test]
+fn parses_custom_type_and_expands_field() {
+    let src = "type Email = string -check \"email ~ '^[^@]+@[^@]+$'\"
+type Money = bigint -check \"value >= 0\"
+User
+  id uuid -pk
+  email Email -uniq
+  balance Money
+";
+    let ast = parse(src).unwrap();
+    assert!(ast.custom_type_by_name("Email").is_some());
+    assert!(ast.custom_type_by_name("Money").is_some());
+    let user = find_model(&ast, "User");
+    let email = find_field(user, "email");
+    assert_eq!(email.ty, FieldType::Scalar(ScalarType::String));
+    assert!(email.has(Intent::Check));
+    assert_eq!(email.check_expr.as_deref(), Some("email ~ '^[^@]+@[^@]+$'"));
+    assert!(email.has(Intent::Uniq));
+    assert_eq!(email.custom_type.as_deref(), Some("Email"));
+    let balance = find_field(user, "balance");
+    assert_eq!(balance.ty, FieldType::Scalar(ScalarType::BigInt));
+    assert_eq!(balance.check_expr.as_deref(), Some("value >= 0"));
+    assert_eq!(balance.custom_type.as_deref(), Some("Money"));
+}
+
+#[test]
+fn rejects_custom_type_without_scalar_base() {
+    let src = "type Broken = NotAScalar
+User
+  id uuid -pk
+";
+    let err = parse(src).unwrap_err();
+    assert!(matches!(err, OsdlError::Parse(_)));
+}

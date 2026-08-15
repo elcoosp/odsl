@@ -28,13 +28,20 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { use_stmt | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
+body    = { use_stmt | type_decl | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
 
 // A module import: `use path::to::module` (unquoted, `::`-separated). Resolved
 // by the project loader into additional source files merged into one AST.
 use_stmt    = { use_kw ~ sp ~ module_path }
 use_kw      = @{ "use" }
 module_path = @{ ident ~ ("::" ~ ident)* }
+
+// A custom type / value object: `type Email = string -check "x ~ 'y'"`.
+// Expands inlinely to its base scalar plus inherited intents/check.
+type_decl   = { type_kw ~ sp ~ ident ~ sp ~ equals ~ sp ~ type_rhs }
+type_kw     = @{ "type" }
+equals      = @{ "=" }
+type_rhs    = { word ~ (sp ~ token)* }
 
 indent  = @{ (" " | "\t")* }
 

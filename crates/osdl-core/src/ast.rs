@@ -4,12 +4,24 @@
 //! other cyclically (e.g. `User` -> `Post` -> `User`) without fighting the
 //! borrow checker. Nodes are addressed by stable [`Idx`] handles.
 
-use crate::types::{FieldType, Intent};
+use crate::types::{FieldType, Intent, ScalarType};
 use la_arena::{Arena, Idx, RawIdx};
 use serde::{Deserialize, Serialize};
 
 pub type ModelIdx = Idx<Model>;
 pub type FieldIdx = Idx<Field>;
+
+/// A user-defined value object: `type Email = string -check "..."`.
+/// Expands inline to its base scalar plus inherited intents/check.
+#[derive(Debug, Clone)]
+pub struct CustomType {
+    pub name: String,
+    pub base: ScalarType,
+    pub intents: Vec<Intent>,
+    pub enum_variants: Vec<String>,
+    pub default_value: Option<String>,
+    pub check_expr: Option<String>,
+}
 
 /// The whole compiled schema.
 #[derive(Debug, Clone, Default)]
@@ -17,6 +29,8 @@ pub struct Ast {
     pub models: Arena<Model>,
     /// Lookup from model name to its arena index.
     pub model_index: Vec<(String, ModelIdx)>,
+    /// User-defined types (`type X = ...`), keyed by name.
+    pub custom_types: Vec<(String, CustomType)>,
 }
 
 impl Ast {
@@ -41,6 +55,20 @@ impl Ast {
 
     pub fn models(&self) -> impl Iterator<Item = (ModelIdx, &Model)> {
         self.models.iter()
+    }
+
+    /// Resolve a custom type by name.
+    pub fn custom_type_by_name(&self, name: &str) -> Option<&CustomType> {
+        self.custom_types
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, ct)| ct)
+    }
+
+    /// Register a custom type (used during parsing).
+    pub fn add_custom_type(&mut self, ct: CustomType) {
+        let name = ct.name.clone();
+        self.custom_types.push((name, ct));
     }
 
     /// Number of fields across all models (used by benchmarks).
@@ -108,6 +136,9 @@ pub struct Field {
     pub check_expr: Option<String>,
     /// Target models for a polymorphic reference (`-polymorphic Post,Video`).
     pub polymorphic_targets: Vec<String>,
+    /// Name of the custom type (`type X = ...`) this field was declared with,
+    /// if any. Used by renderers that emit newtype wrappers.
+    pub custom_type: Option<String>,
     pub line: usize,
 }
 
