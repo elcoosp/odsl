@@ -10,6 +10,7 @@
 
 #![allow(clippy::result_large_err)]
 
+use std::io::IsTerminal;
 use clap::{Parser, Subcommand};
 use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
@@ -107,6 +108,10 @@ enum MigrateAction {
         /// Database connection URL (`sqlite://`, `postgres://`, `mongodb://`).
         #[arg(long)]
         db_url: Option<String>,
+        /// Skip the interactive confirmation for destructive changes
+        /// (dropping models/fields, altering columns). Use with care.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -133,7 +138,8 @@ fn main() -> Result<(), OsdlError> {
                 input,
                 target,
                 db_url,
-            } => cmd_migrate_up(&input, target, db_url),
+                force,
+            } => cmd_migrate_up(&input, target, db_url, force),
         },
     }
 }
@@ -206,6 +212,21 @@ fn cmd_build(
     Ok(())
 }
 
+/// One-line description of a single op (used by the destructive-guard prompt).
+fn describe_op(op: &osdl_migrator::MigrationOp) -> String {
+    match op {
+        osdl_migrator::MigrationOp::DropModel { model } => format!("drop model {model}"),
+        osdl_migrator::MigrationOp::DropField { model, field } => {
+            format!("drop field {model}.{field}")
+        }
+        osdl_migrator::MigrationOp::AlterField { model, field, .. } => {
+            format!("alter field {model}.{field}")
+        }
+        osdl_migrator::MigrationOp::CreateModel { .. }
+        | osdl_migrator::MigrationOp::AddField { .. } => String::new(),
+    }
+}
+
 fn cmd_migrate_plan(input: &std::path::Path, target: Target, apply: bool) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
@@ -233,6 +254,7 @@ fn cmd_migrate_up(
     input: &std::path::Path,
     target: Target,
     db_url: Option<String>,
+    force: bool,
 ) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
@@ -248,6 +270,35 @@ fn cmd_migrate_up(
 
     if plan.ops.is_empty() {
         println!("no changes");
+    }
+
+    // Guard destructive operations (drop model/field, alter column) unless
+    // the user explicitly passes --force or confirms interactively.
+    if plan.is_destructive() && !force {
+        if std::io::stdin().is_terminal() {
+            let count = plan.destructive_ops().len();
+            println!(
+                "\nThis plan contains {count} potentially destructive operation(s) \
+                 that may DESTROY DATA (drop model/field, alter column):"
+            );
+            for op in plan.destructive_ops() {
+                println!("  - {}", describe_op(op));
+            }
+            print!("Type 'yes' to proceed, anything else to abort: ");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            if std::io::stdin().read_line(&mut answer).is_err() || answer.trim() != "yes" {
+                println!("aborted; no changes applied");
+                return Ok(());
+            }
+        } else {
+            // Non-interactive (piped) without --force: refuse destructive ops.
+            return Err(io_err(
+                "refusing destructive migration in non-interactive mode; \
+                 re-run with --force to apply, or pipe 'yes' to confirm",
+            ));
+        }
     }
 
     // Apply against a live database when a connection URL is provided.
