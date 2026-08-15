@@ -14,6 +14,15 @@ pub enum Target {
     SeaOrmMysql,
     /// MongoDB Serde structs + `$jsonSchema` validators.
     Mongo,
+    /// TypeScript interfaces (single source of truth for the frontend).
+    #[value(name = "typescript")]
+    TypeScript,
+    /// GraphQL schema (SDL types per model).
+    #[value(name = "graphql")]
+    GraphQl,
+    /// OpenAPI 3 component schemas (API DTOs).
+    #[value(name = "openapi")]
+    OpenApi,
 }
 
 impl Target {
@@ -24,6 +33,9 @@ impl Target {
             Target::SeaOrmPostgres => "seaorm-postgres",
             Target::SeaOrmMysql => "seaorm-mysql",
             Target::Mongo => "mongo",
+            Target::TypeScript => "typescript",
+            Target::GraphQl => "graphql",
+            Target::OpenApi => "openapi",
         }
     }
 
@@ -33,6 +45,11 @@ impl Target {
             self,
             Target::SeaOrmSqlite | Target::SeaOrmPostgres | Target::SeaOrmMysql
         )
+    }
+
+    /// Whether this target is a transpile-only target (no database backend).
+    pub fn is_transpile(self) -> bool {
+        matches!(self, Target::TypeScript | Target::GraphQl | Target::OpenApi)
     }
 }
 
@@ -45,6 +62,9 @@ impl FromStr for Target {
             "seaorm-postgres" | "postgres" | "pg" => Ok(Target::SeaOrmPostgres),
             "seaorm-mysql" | "mysql" | "mariadb" => Ok(Target::SeaOrmMysql),
             "mongo" | "mongodb" => Ok(Target::Mongo),
+            "typescript" | "ts" => Ok(Target::TypeScript),
+            "graphql" | "graphql-sdl" | "gql" => Ok(Target::GraphQl),
+            "openapi" | "oas" | "swagger" => Ok(Target::OpenApi),
             other => Err(format!("unknown target `{other}`")),
         }
     }
