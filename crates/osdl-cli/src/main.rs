@@ -222,12 +222,9 @@ fn main() -> Result<(), OsdlError> {
                 db_url,
                 force,
             } => cmd_migrate_up(&input, target, db_url, force),
-            MigrateAction::Down {
-                input,
-                target,
-                db_url,
-                force,
-            } => cmd_migrate_down(&input, target, db_url, force),
+            MigrateAction::Down { input, target, db_url, force } => {
+                cmd_migrate_down(&input, target, db_url, force)
+            }
             MigrateAction::Status {
                 input,
                 target,
@@ -670,15 +667,16 @@ fn cmd_migrate_down(
     // Live DB: apply the rollback via the adapter's `revert`.
     let runtime =
         tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
-    let applied = runtime.block_on(async {
-        let adapter = osdl_adapter::connect(url)
-            .await
-            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
-        adapter
-            .revert(&plan, &target_lock, Some(&current))
-            .await
-            .map_err(|e| io_err(format!("applying rollback: {e}")))
-    })?;
+    let applied = runtime
+        .block_on(async {
+            let adapter = osdl_adapter::connect(url)
+                .await
+                .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
+            adapter
+                .revert(&plan, &target_lock, Some(&current))
+                .await
+                .map_err(|e| io_err(format!("applying rollback: {e}")))
+        })?;
     for stmt in &applied {
         println!("  reverted: {stmt}");
     }
