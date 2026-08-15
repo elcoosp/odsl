@@ -54,17 +54,21 @@ Post
 osdl init                              # scaffold schema.osdl + osdl.lock
 osdl build --target sea-orm-sqlite     # emit SeaORM entities
 osdl build --target mongo               # emit Mongo structs + jsonSchema
-osdl migrate                           # print the migration plan
-osdl migrate --apply                    # print plan and update osdl.lock
-osdl migrate up --db-url sqlite:///app.db?mode=rwc   # apply to a live DB
-osdl migrate up --db-url postgres://localhost/app    # ...or Postgres
-osdl migrate up --db-url mongodb://localhost:27017/app  # ...or MongoDB
+osdl migrate plan                      # print the migration plan
+osdl migrate plan --apply              # print plan and update osdl.lock
+osdl migrate create --out migrations   # write migrations/<ts>_<slug>.sql
+osdl migrate create --sea-orm          # ...as SeaORM up/down Rust modules
+osdl migrate up --db-url sqlite:///app.db?mode=rwc     # apply to a live DB
+osdl migrate up --db-url postgres://localhost/app       # ...or Postgres
+osdl migrate up --db-url mongodb://localhost:27017/app # ...or MongoDB
 ```
 
-`migrate up` connects to the database named by `--db-url`, applies every op in
-the diff (CREATE/ALTER/DROP for SQL; `createCollection` / `collMod` validator
-for Mongo), then writes the new `osdl.lock`. Re-running it is a no-op once the
-lockfile matches the schema.
+`migrate create` writes a migration file from the schema diff — a timestamped
+`.sql` (with `up`/`down` sections) or, with `--sea-orm`, a `Migrator`
+`up`/`down` Rust module. `migrate up` connects to the database named by
+`--db-url`, applies every op in the diff (CREATE/ALTER/DROP for SQL;
+`createCollection` / `collMod` validators for Mongo), then writes the new
+`osdl.lock`. Re-running is a no-op once the lockfile matches the schema.
 
 ## Building & testing
 
@@ -88,5 +92,9 @@ cargo fmt  --all
   Postgres, and MongoDB `createCollection`/`collMod` validators. Table and
   collection names are shared with the renderers via `osdl_core::naming`, so
   generated code and migrations always agree.
+* **Migration files** — `osdl migrate create` renders the same plan to
+  timestamped `migrations/<ts>_<slug>.sql` (with `up`/`down` sections) or,
+  with `--sea-orm`, a SeaORM `Migrator` `up`/`down` Rust module, so the diff is
+  also persisted as reviewable, replayable files (not just executed live).
 * **DRY/KISS** — the `CodeRenderer` trait is the only extension point; adding
   a backend means implementing one `render` method.
