@@ -156,6 +156,15 @@ fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
 fn render_field(field: &Field, _target: Target) -> TokenStream {
     let name = syn::Ident::new(&field.name, proc_macro2::Span::call_site());
 
+    // `-virtual` fields are computed/serialized only: not a database column.
+    if field.has(Intent::Virtual) {
+        let ty = rust_type_for_field(field, _target);
+        return quote! {
+            // virtual (computed/serialized-only; not stored in the database)
+            pub #name: #ty,
+        };
+    }
+
     // A `-relation Other` (has_many) field has no physical column: only emit the
     // relation field.
     if field.has(Intent::Relation)
@@ -165,6 +174,24 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
         return quote! {
             #[sea_orm(has_many)]
             pub #name: HasMany<super::#te::Entity>,
+        };
+    }
+
+    // A `-polymorphic A,B` reference renders as a (target_type, target_id) pair
+    // rather than a single foreign key.
+    if field.has(Intent::Polymorphic) {
+        let ty_type = syn::Ident::new(
+            &format!("{}TargetType", to_pascal_case(&field.name)),
+            proc_macro2::Span::call_site(),
+        );
+        let ty_id = syn::Ident::new(
+            &format!("{}TargetId", to_pascal_case(&field.name)),
+            proc_macro2::Span::call_site(),
+        );
+        let _targets = &field.polymorphic_targets;
+        return quote! {
+            pub #ty_type: String,
+            pub #ty_id: Uuid,
         };
     }
 
@@ -205,6 +232,9 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
     if field.has(Intent::Uniq) {
         attrs.push(quote! { #[sea_orm(unique)] });
     }
+    if field.has(Intent::SoftDelete) {
+        attrs.push(quote! { #[sea_orm(nullable)] });
+    }
 
     // Native enum: emit an ActiveEnum-backed column.
     if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
@@ -216,14 +246,25 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
             #(#attrs)*
             #[sea_orm(active_enum = #enum_ident)]
             #default_attr
+            // soft-delete column
             pub #name: #col_ty,
         };
     }
 
     let default_attr = default_attr(field);
+    let check_doc = if field.has(Intent::Check) {
+        let expr = field
+            .check_expr
+            .clone()
+            .unwrap_or_else(|| "true".to_string());
+        quote! { #[doc = #expr] }
+    } else {
+        quote! {}
+    };
     quote! {
         #(#attrs)*
         #default_attr
+        #check_doc
         pub #name: #ty,
     }
 }
@@ -544,5 +585,44 @@ mod tests {
             user_rs.contains("default_value = \"CURRENT_TIMESTAMP\""),
             "now default should map to CURRENT_TIMESTAMP:\\n{user_rs}"
         );
+    }
+
+    #[test]
+    fn renders_domain_modeling_intents() {
+        let ast = compile(
+            "User\n  id uuid -pk\n  display string -virtual\n  age int -check \"age >= 18\"\n  deleted_at datetime -null -softdelete\nComment\n  id uuid -pk\n  target -polymorphic Post,Video\nPost\n  id uuid -pk\nVideo\n  id uuid -pk\n",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        // virtual field present but NOT as a sea_orm column (no attribute).
+        assert!(user_rs.contains("pub display: String"));
+        // A virtual field must not carry a generated `#[sea_orm(...)]` attribute.
+        let display_has_no_attr = user_rs
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| w[1].trim_start().starts_with("pub display") && !w[0].trim_start().starts_with("#["));
+        assert!(display_has_no_attr, "display should have no sea_orm attribute");
+        // check expr surfaced as a doc comment.
+        assert!(user_rs.contains("age >= 18"));
+        // soft-delete column is nullable.
+        assert!(user_rs.contains("deleted_at"));
+        assert!(user_rs.contains("nullable"));
+
+        let comment_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/comment.rs")
+            .unwrap()
+            .1
+            .clone();
+        // polymorphic expands to target_type + target_id pair.
+        assert!(comment_rs.contains("TargetType: String"));
+        assert!(comment_rs.contains("TargetId: Uuid"));
     }
 }

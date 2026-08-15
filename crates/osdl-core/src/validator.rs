@@ -117,6 +117,68 @@ impl Validator {
                             ty: field.type_keyword(),
                         }));
                     }
+                    // `-check "expr"` requires a scalar field and a non-empty expression.
+                    if *intent == Intent::Check
+                        && !matches!(field.ty, FieldType::Scalar(_))
+                    {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-check".into(),
+                            ty: field.type_keyword(),
+                        }));
+                    }
+                    if *intent == Intent::Check
+                        && field.check_expr.as_deref().unwrap_or("").trim().is_empty()
+                    {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-check".into(),
+                            ty: "requires a non-empty expression (use -check \"...\")".into(),
+                        }));
+                    }
+                    // `-softdelete` must annotate a nullable timestamp column.
+                    if *intent == Intent::SoftDelete
+                        && !matches!(
+                            field.ty,
+                            FieldType::Scalar(ScalarType::DateTime)
+                                | FieldType::Scalar(ScalarType::Date)
+                        )
+                    {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-softdelete".into(),
+                            ty: field.type_keyword(),
+                        }));
+                    }
+                    if *intent == Intent::SoftDelete && !field.has(Intent::Null) {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-softdelete".into(),
+                            ty: "must be nullable (-null) to allow soft deletes".into(),
+                        }));
+                    }
+                    // `-virtual` fields are computed/serialized only: they must not
+                    // carry DB-backed intents (which would imply a column).
+                    if *intent == Intent::Virtual {
+                        for db_intent in [
+                            Intent::Pk,
+                            Intent::Uniq,
+                            Intent::Auto,
+                            Intent::Tz,
+                            Intent::Index,
+                            Intent::Default,
+                            Intent::Check,
+                            Intent::SoftDelete,
+                        ] {
+                            if field.has(db_intent) {
+                                return Err(OsdlError::compile(
+                                    CompileErrorKind::TypeMismatch {
+                                        intent: intent.as_keyword().to_string(),
+                                        ty: format!(
+                                            "cannot combine -virtual with {}",
+                                            db_intent.as_keyword()
+                                        ),
+                                    },
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -274,7 +336,8 @@ fn dfs(
 fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
     use Intent::*;
     match intent {
-        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m => true,
+        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m
+        | Virtual | SoftDelete | Check | Polymorphic => true,
         Fulltext => {
             // Full-text search only makes sense on textual types.
             matches!(ty, FieldType::Scalar(ScalarType::String))
@@ -289,25 +352,28 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
     use Target::*;
     match (target, intent) {
         // SQL backends support these intents natively.
-        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m) => {
+        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual | SoftDelete | Check | Polymorphic) => {
             true
         }
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
         (
             SeaOrmPostgres | SeaOrmMysql,
-            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m,
+            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual | SoftDelete | Check | Polymorphic,
         ) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
         (SeaOrmMysql, Fulltext) => true,      // MySQL FULLTEXT index
         (SeaOrmMysql, Partition) => false,    // partition requires table-level DDL here
         // Mongo supports these natively.
-        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m) => {
+        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m | Virtual | SoftDelete | Check | Polymorphic) => {
             true
         }
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index
+        // Transpile targets (TS / GraphQL / OpenAPI) describe types only and
+        // support every intent as a documentation/constraint annotation.
+        (TypeScript | GraphQl | OpenApi, _) => true,
     }
 }
 

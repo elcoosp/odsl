@@ -110,6 +110,19 @@ pub enum Intent {
     /// Many-to-many relationship (`-m2m <Target>`): the compiler auto-generates
     /// a junction table linking `Source` and `Target`.
     M2m,
+    /// Computed / serialized-only field: present in the Rust struct but
+    /// NOT mapped to a database column (`-virtual`).
+    Virtual,
+    /// Marks a nullable timestamp column as the soft-delete marker
+    /// (`-softdelete`); the model is logically deleted by setting it.
+    SoftDelete,
+    /// Inline CHECK constraint expression (`-check "age >= 18"`). The raw
+    /// boolean expression is stored on the field and rendered as SQL `CHECK`.
+    Check,
+    /// Polymorphic reference: a field that may point at one of several models
+    /// (`-polymorphic Post,Video`). Rendered as a `(target_type, target_id)`
+    /// pair rather than a single foreign key.
+    Polymorphic,
 }
 
 impl Intent {
@@ -127,6 +140,10 @@ impl Intent {
             Intent::Enum => "-enum",
             Intent::Default => "-default",
             Intent::M2m => "-m2m",
+            Intent::Virtual => "-virtual",
+            Intent::SoftDelete => "-softdelete",
+            Intent::Check => "-check",
+            Intent::Polymorphic => "-polymorphic",
         }
     }
 }

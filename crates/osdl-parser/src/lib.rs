@@ -212,9 +212,13 @@ fn add_field_from_tokens(
     let mut enum_variants: Vec<String> = Vec::new();
     let mut default_value: Option<String> = None;
     let mut m2m_target: Option<String> = None;
+    let mut check_expr: Option<String> = None;
+    let mut polymorphic_targets: Vec<String> = Vec::new();
     let mut capturing_enum = false;
     let mut capturing_default = false;
     let mut capturing_m2m = false;
+    let mut capturing_check = false;
+    let mut capturing_polymorphic = false;
 
     for tok in iter {
         match tok {
@@ -235,6 +239,20 @@ fn add_field_from_tokens(
                     // The target model follows as a separate word/reference token.
                     intents.push(Intent::M2m);
                     capturing_m2m = true;
+                    continue;
+                }
+                if f == "-check" {
+                    // The boolean expression follows as a separate quoted token
+                    // (e.g. `-check "age >= 18"`).
+                    intents.push(Intent::Check);
+                    capturing_check = true;
+                    continue;
+                }
+                if f == "-polymorphic" {
+                    // The target model list follows as a separate word token
+                    // (e.g. `-polymorphic Post,Video`).
+                    intents.push(Intent::Polymorphic);
+                    capturing_polymorphic = true;
                     continue;
                 }
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -270,6 +288,20 @@ fn add_field_from_tokens(
                     default_value = Some(w.trim().to_string());
                     continue;
                 }
+                if capturing_check {
+                    capturing_check = false;
+                    check_expr = Some(w.trim().to_string());
+                    continue;
+                }
+                if capturing_polymorphic {
+                    capturing_polymorphic = false;
+                    polymorphic_targets = w
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    continue;
+                }
                 if capturing_m2m {
                     capturing_m2m = false;
                     m2m_target = Some(w.trim().to_string());
@@ -295,6 +327,11 @@ fn add_field_from_tokens(
                     default_value = Some(q.clone());
                     continue;
                 }
+                if capturing_check {
+                    capturing_check = false;
+                    check_expr = Some(q.clone());
+                    continue;
+                }
                 // A bare quoted string as a type/ref token is unsupported;
                 // treat it as an inferred reference name (best-effort).
                 ty = Some(FieldType::InferredRef(q.clone()));
@@ -315,6 +352,8 @@ fn add_field_from_tokens(
         enum_variants,
         default_value,
         m2m_target,
+        check_expr,
+        polymorphic_targets,
         line: line_no,
     });
     Ok(())
@@ -334,6 +373,10 @@ fn parse_intent(flag: &str) -> Option<Intent> {
         "-enum" => Some(Intent::Enum),
         "-default" => Some(Intent::Default),
         "-m2m" | "-many" => Some(Intent::M2m),
+        "-virtual" => Some(Intent::Virtual),
+        "-softdelete" => Some(Intent::SoftDelete),
+        "-check" => Some(Intent::Check),
+        "-polymorphic" => Some(Intent::Polymorphic),
         _ => None,
     }
 }
@@ -496,6 +539,64 @@ mod enum_tests {
                 "inactive".to_string(),
                 "pending".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parses_virtual_field() {
+        let src = "User\n  id uuid -pk\n  display_name string -virtual\n";
+        let ast = parse(src).unwrap();
+        let f = ast
+            .models()
+            .flat_map(|(_, m)| m.fields())
+            .find(|(_, fl)| fl.name == "display_name")
+            .unwrap()
+            .1;
+        assert!(f.has(Intent::Virtual));
+    }
+
+    #[test]
+    fn parses_softdelete_field() {
+        let src = "User\n  id uuid -pk\n  deleted_at datetime -null -softdelete\n";
+        let ast = parse(src).unwrap();
+        let f = ast
+            .models()
+            .flat_map(|(_, m)| m.fields())
+            .find(|(_, fl)| fl.name == "deleted_at")
+            .unwrap()
+            .1;
+        assert!(f.has(Intent::SoftDelete));
+        assert!(f.has(Intent::Null));
+    }
+
+    #[test]
+    fn parses_check_constraint() {
+        let src = "User\n  id uuid -pk\n  age int -check \"age >= 18\"\n";
+        let ast = parse(src).unwrap();
+        let f = ast
+            .models()
+            .flat_map(|(_, m)| m.fields())
+            .find(|(_, fl)| fl.name == "age")
+            .unwrap()
+            .1;
+        assert!(f.has(Intent::Check));
+        assert_eq!(f.check_expr.as_deref(), Some("age >= 18"));
+    }
+
+    #[test]
+    fn parses_polymorphic_reference() {
+        let src = "Comment\n  id uuid -pk\n  target -polymorphic Post,Video\nPost\n  id uuid -pk\nVideo\n  id uuid -pk\n";
+        let ast = parse(src).unwrap();
+        let f = ast
+            .models()
+            .flat_map(|(_, m)| m.fields())
+            .find(|(_, fl)| fl.name == "target")
+            .unwrap()
+            .1;
+        assert!(f.has(Intent::Polymorphic));
+        assert_eq!(
+            f.polymorphic_targets,
+            vec!["Post".to_string(), "Video".to_string()]
         );
     }
 }
