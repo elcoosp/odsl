@@ -220,6 +220,7 @@ fn parse_intent(flag: &str) -> Option<Intent> {
         "-uniq" | "-unique" => Some(Intent::Uniq),
         "-null" | "-nullable" => Some(Intent::Null),
         "-fulltext" => Some(Intent::Fulltext),
+        "-index" | "-idx" => Some(Intent::Index),
         "-tz" | "-timezone" => Some(Intent::Tz),
         "-auto" | "-autoincrement" => Some(Intent::Auto),
         "-relation" => Some(Intent::Relation),

@@ -201,7 +201,7 @@ fn dfs(
 fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
     use Intent::*;
     match intent {
-        Pk | Partition | Uniq | Null | Auto | Tz | Relation => true,
+        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index => true,
         Fulltext => {
             // Full-text search only makes sense on textual types.
             matches!(ty, FieldType::Scalar(ScalarType::String))
@@ -216,14 +216,14 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
     use Target::*;
     match (target, intent) {
         // SQL backends support these intents natively.
-        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation) => true,
+        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index) => true,
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
-        (SeaOrmPostgres, Pk | Uniq | Null | Auto | Tz | Relation) => true,
+        (SeaOrmPostgres, Pk | Uniq | Null | Auto | Tz | Relation | Index) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
         // Mongo supports these natively.
-        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation) => true,
+        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index) => true,
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index
     }
