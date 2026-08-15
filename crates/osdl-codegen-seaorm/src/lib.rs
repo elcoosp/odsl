@@ -499,6 +499,32 @@ mod tests {
     }
 
     #[test]
+    fn renders_entity_level_composite_index() {
+        let ast = compile(
+            "User\n  id uuid -pk\n  tenant_id uuid\n  email string\n  -uniq tenant_id,email\n",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        // Entity-level index attribute referencing the generated index struct.
+        assert!(
+            user_rs.contains("#[sea_orm(indexes(UniqTenantIdEmail))]"),
+            "indexes attribute missing:\\n{user_rs}"
+        );
+        // The generated index struct implements IndexName + Index.
+        assert!(user_rs.contains("impl sea_orm::entity::IndexName for UniqTenantIdEmail"));
+        assert!(user_rs.contains("impl sea_orm::entity::Index for UniqTenantIdEmail"));
+        assert!(user_rs.contains("fn unique(&self) -> bool {"));
+        assert!(user_rs.contains("\"tenant_id\""));
+        assert!(user_rs.contains("\"email\""));
+    }
+
+    #[test]
     fn renders_default_value_attr() {
         let ast =
             compile("User\n  id uuid -pk\n  age int -default 0\n  created datetime -default now\n");
@@ -512,11 +538,11 @@ mod tests {
             .clone();
         assert!(
             user_rs.contains("default_value = \"0\""),
-            "int default missing:\n{user_rs}"
+            "int default missing:\\n{user_rs}"
         );
         assert!(
             user_rs.contains("default_value = \"CURRENT_TIMESTAMP\""),
-            "now default should map to CURRENT_TIMESTAMP:\n{user_rs}"
+            "now default should map to CURRENT_TIMESTAMP:\\n{user_rs}"
         );
     }
 }
