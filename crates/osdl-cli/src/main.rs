@@ -59,12 +59,21 @@ enum Command {
         /// Output directory for generated code.
         #[arg(long, default_value = "src/generated")]
         out: std::path::PathBuf,
+        /// Watch `input` and rebuild on change (until interrupted).
+        #[arg(long)]
+        watch: bool,
     },
     /// Diff the schema against `osdl.lock` and manage migrations.
     Migrate {
         #[command(subcommand)]
         action: MigrateAction,
     },
+    /// Run the OSDL language server (LSP) over stdio.
+    ///
+    /// Editors connect via the Language Server Protocol; diagnostics are
+    /// published on open/change using the same parse+validate pipeline as
+    /// `osdl build`.
+    Lsp,
 }
 
 /// Sub-actions of `osdl migrate`.
@@ -121,7 +130,18 @@ fn main() -> Result<(), OsdlError> {
 
     match cli.command {
         Command::Init { path } => cmd_init(&path),
-        Command::Build { input, target, out } => cmd_build(&input, target, &out),
+        Command::Build {
+            input,
+            target,
+            out,
+            watch,
+        } => {
+            if watch {
+                cmd_build_watch(&input, target, &out)
+            } else {
+                cmd_build(&input, target, &out)
+            }
+        }
         Command::Migrate { action } => match action {
             MigrateAction::Plan {
                 input,
@@ -141,6 +161,9 @@ fn main() -> Result<(), OsdlError> {
                 force,
             } => cmd_migrate_up(&input, target, db_url, force),
         },
+        Command::Lsp => {
+            osdl_lsp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
+        }
     }
 }
 
@@ -192,6 +215,88 @@ fn cmd_build(
     target: Target,
     out: &std::path::Path,
 ) -> Result<(), OsdlError> {
+    run_build(input, target, out)?;
+    Ok(())
+}
+
+/// Watch `input` for changes and rebuild on every modification until the
+/// process is interrupted (Ctrl-C). Uses the `notify` crate's OS-native file
+/// watcher; the first build runs immediately.
+fn cmd_build_watch(
+    input: &std::path::Path,
+    target: Target,
+    out: &std::path::Path,
+) -> Result<(), OsdlError> {
+    use notify::{
+        Config, Event, RecommendedWatcher, RecursiveMode, Watcher,
+    };
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = input
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let watch_name = input
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "*.osdl".to_string());
+
+    // Initial build.
+    match run_build(input, target, out) {
+        Ok(()) => println!("watching {} (Ctrl-C to stop)", input.display()),
+        Err(e) => eprintln!("initial build failed: {e}"),
+    }
+
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: notify::Result<Event>| {
+            let _ = tx.send(res);
+        },
+        Config::default().with_poll_interval(Duration::from_millis(200)),
+    )
+    .map_err(|e| io_err(format!("creating watcher: {e}")))?;
+    watcher
+        .watch(&dir, RecursiveMode::NonRecursive)
+        .map_err(|e| io_err(format!("watching {}: {e}", dir.display())))?;
+
+    for res in rx {
+        match res {
+            Ok(event) => {
+                // Only react to modifications of the watched file.
+                if !event_triggers_rebuild(&event, &watch_name) {
+                    continue;
+                }
+                match run_build(input, target, out) {
+                    Ok(()) => println!("rebuilt at {}", now_str()),
+                    Err(e) => eprintln!("build failed at {}: {e}", now_str()),
+                }
+            }
+            Err(e) => eprintln!("watch error: {e}"),
+        }
+    }
+    Ok(())
+}
+
+/// Whether a filesystem event should trigger a rebuild: a *modify* event on the
+/// exact watched file (ignoring events for other paths or non-modify events).
+fn event_triggers_rebuild(event: &notify::Event, watch_name: &str) -> bool {
+    let is_modify = matches!(event.kind, notify::EventKind::Modify(_));
+    let relevant = event.paths.iter().any(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy() == watch_name)
+            .unwrap_or(false)
+    });
+    is_modify && relevant
+}
+
+/// Build (parse + validate + codegen) once. Returns `Ok` on success.
+fn run_build(
+    input: &std::path::Path,
+    target: Target,
+    out: &std::path::Path,
+) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
     let files = match target {
         Target::SeaOrmSqlite | Target::SeaOrmPostgres | Target::SeaOrmMysql => {
@@ -210,6 +315,11 @@ fn cmd_build(
     tracing::info!(target = ?target, files = files.len(), out = %out.display(), "generated code");
     println!("generated {} files into {}", files.len(), out.display());
     Ok(())
+}
+
+/// Local-time HH:MM:SS for watch-mode log lines.
+fn now_str() -> String {
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 /// One-line description of a single op (used by the destructive-guard prompt).
@@ -389,5 +499,40 @@ fn cmd_migrate_create(
             println!("no migration file written");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::{EventKind, event::ModifyKind};
+
+    /// Helper to build a single-path notify event.
+    fn ev(kind: EventKind, path: &str) -> notify::Event {
+        notify::Event {
+            kind,
+            paths: vec![std::path::PathBuf::from(path)],
+            attrs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn watch_reacts_to_modify_of_watched_file() {
+        let e = ev(EventKind::Modify(ModifyKind::Any), "/proj/schema.osdl");
+        assert!(event_triggers_rebuild(&e, "schema.osdl"));
+    }
+
+    #[test]
+    fn watch_ignores_modify_of_other_file() {
+        let e = ev(EventKind::Modify(ModifyKind::Any), "/proj/other.osdl");
+        assert!(!event_triggers_rebuild(&e, "schema.osdl"));
+    }
+
+    #[test]
+    fn watch_ignores_non_modify_events() {
+        let created = ev(EventKind::Create(notify::event::CreateKind::File), "/proj/schema.osdl");
+        let accessed = ev(EventKind::Access(notify::event::AccessKind::Any), "/proj/schema.osdl");
+        assert!(!event_triggers_rebuild(&created, "schema.osdl"));
+        assert!(!event_triggers_rebuild(&accessed, "schema.osdl"));
     }
 }

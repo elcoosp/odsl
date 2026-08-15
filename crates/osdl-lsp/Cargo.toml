@@ -1,0 +1,20 @@
+[package]
+name = "osdl-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-lsp = { workspace = true }
+async-io = "2"
+futures = "0.3"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+osdl-core = { workspace = true }
+osdl-parser = { workspace = true }
+
+[dev-dependencies]
+async-channel = "2"
+serde_json = { workspace = true }
