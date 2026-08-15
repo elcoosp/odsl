@@ -1,0 +1,25 @@
+[package]
+name = "osdl-adapter"
+description = "Live database adapters that execute OSDL migration plans"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+osdl-core.workspace = true
+osdl-migrator.workspace = true
+sea-orm.workspace = true
+mongodb.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+osdl-core.workspace = true
+osdl-migrator.workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/osdl-codegen-seaorm",
     "crates/osdl-codegen-mongo",
     "crates/osdl-migrator",
+    "crates/osdl-adapter",
     "crates/osdl-cli",
 ]
 resolver = "2"
@@ -47,6 +48,7 @@ sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio-native-tl
 sea-orm-migration = "2.0"
 mongodb = "3.8"
 tokio = { version = "1.53", features = ["full"] }
+async-trait = "0.1"
 
 # Testing & benchmarking
 insta = "1.48"
@@ -60,3 +62,4 @@ osdl-codegen = { path = "crates/osdl-codegen" }
 osdl-codegen-seaorm = { path = "crates/osdl-codegen-seaorm" }
 osdl-codegen-mongo = { path = "crates/osdl-codegen-mongo" }
 osdl-migrator = { path = "crates/osdl-migrator" }
+osdl-adapter = { path = "crates/osdl-adapter" }

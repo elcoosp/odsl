@@ -11,6 +11,7 @@ pub mod ast;
 pub mod errors;
 pub mod intent_compat;
 pub mod lockfile;
+pub mod naming;
 pub mod types;
 pub mod validator;
 
@@ -18,6 +19,7 @@ pub use ast::{Ast, Field, FieldIdx, LockField, LockModel, Model, ModelIdx};
 pub use errors::{CompileErrorKind, OsdlError, ParseError, Span};
 pub use intent_compat::Target;
 pub use lockfile::Lockfile;
+pub use naming::to_snake_plural;
 pub use types::{FieldType, Intent, Reference, ScalarType};
 pub use validator::{CodeRenderer, Validator};
 
