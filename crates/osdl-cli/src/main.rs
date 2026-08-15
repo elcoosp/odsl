@@ -258,13 +258,28 @@ fn cmd_migrate_up(
         let applied = runtime
             .block_on(osdl_adapter::connect(url))
             .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
-        let statements = runtime
-            .block_on(applied.apply(&plan, &target_lock, Some(&current)))
-            .map_err(|e| io_err(format!("applying migration: {e}")))?;
-        for stmt in &statements {
-            println!("  applied: {stmt}");
+        // Idempotency: skip if this exact schema state was already applied.
+        runtime
+            .block_on(applied.ensure_history_table())
+            .map_err(|e| io_err(format!("history table: {e}")))?;
+        let schema_key = target_lock.checksum.clone();
+        let already = runtime
+            .block_on(applied.applied_migrations())
+            .map_err(|e| io_err(format!("history read: {e}")))?;
+        if already.iter().any(|n| n == &schema_key) {
+            println!("schema {schema_key} already applied; skipping");
+        } else {
+            let statements = runtime
+                .block_on(applied.apply(&plan, &target_lock, Some(&current)))
+                .map_err(|e| io_err(format!("applying migration: {e}")))?;
+            for stmt in &statements {
+                println!("  applied: {stmt}");
+            }
+            println!("applied {} change(s) to {url}", statements.len());
+            runtime
+                .block_on(applied.record_applied(&schema_key, &schema_key))
+                .map_err(|e| io_err(format!("recording migration: {e}")))?;
         }
-        println!("applied {} change(s) to {url}", statements.len());
     }
 
     // `up` always records the new baseline lockfile.

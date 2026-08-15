@@ -52,6 +52,23 @@ pub trait SchemaAdapter: Send + Sync {
         target: &Lockfile,
         current: Option<&Lockfile>,
     ) -> Result<Vec<String>, AdapterError>;
+
+    /// Create the idempotency history table (`_osdl_migrations`) if absent.
+    async fn ensure_history_table(&self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    /// Record a successfully-applied migration for idempotency. Default no-op
+    /// (Mongo and other backends manage history separately).
+    async fn record_applied(&self, _name: &str, _checksum: &str) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    /// Names of migrations already applied (for idempotency checks). Default
+    /// empty (backends without a tracker always re-apply).
+    async fn applied_migrations(&self) -> Result<Vec<String>, AdapterError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Connect to a live database described by `db_url` and return the matching
@@ -107,10 +124,80 @@ pub struct SqlAdapter {
     backend: Backend,
 }
 
+impl SqlAdapter {
+    /// Idempotency tracker table. Records the name + checksum of every
+    /// migration that has been applied, so re-running `up` on an already
+    /// migrated database is a no-op for already-applied migrations.
+    const HISTORY_TABLE: &'static str = "_osdl_migrations";
+
+    /// Create the history table if it does not already exist.
+    pub async fn ensure_history_table(&self) -> Result<(), AdapterError> {
+        let stmt = format!(
+            "CREATE TABLE IF NOT EXISTS {} (\
+                name TEXT PRIMARY KEY, \
+                checksum TEXT NOT NULL, \
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))\
+            )",
+            Self::HISTORY_TABLE
+        );
+        self.conn
+            .execute_unprepared(&stmt)
+            .await
+            .map_err(|e| AdapterError::Exec(stmt.clone() + &e.to_string()))?;
+        Ok(())
+    }
+
+    /// Names of migrations already recorded in the history table.
+    pub async fn applied_migrations(&self) -> Result<Vec<String>, AdapterError> {
+        use sea_orm::sea_query::{Alias, Expr, Order, Query};
+        let select = Query::select()
+            .expr(Expr::col(Alias::new("name")))
+            .from(Alias::new(Self::HISTORY_TABLE))
+            .order_by(Alias::new("name"), Order::Asc)
+            .to_owned();
+        let rows = self
+            .conn
+            .query_all(&select)
+            .await
+            .map_err(|e| AdapterError::Exec(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.try_get("", "name").ok())
+            .collect())
+    }
+
+    /// Record that a migration was applied (idempotent: ignores duplicates).
+    pub async fn record_applied(&self, name: &str, checksum: &str) -> Result<(), AdapterError> {
+        let stmt = format!(
+            "INSERT OR IGNORE INTO {} (name, checksum) VALUES ('{}', '{}')",
+            Self::HISTORY_TABLE,
+            name.replace('\'', "''"),
+            checksum.replace('\'', "''")
+        );
+        self.conn
+            .execute_unprepared(&stmt)
+            .await
+            .map_err(|e| AdapterError::Exec(stmt.clone() + &e.to_string()))?;
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl SchemaAdapter for SqlAdapter {
     fn backend(&self) -> Backend {
         self.backend
+    }
+
+    async fn ensure_history_table(&self) -> Result<(), AdapterError> {
+        SqlAdapter::ensure_history_table(self).await
+    }
+
+    async fn record_applied(&self, name: &str, checksum: &str) -> Result<(), AdapterError> {
+        SqlAdapter::record_applied(self, name, checksum).await
+    }
+
+    async fn applied_migrations(&self) -> Result<Vec<String>, AdapterError> {
+        SqlAdapter::applied_migrations(self).await
     }
 
     async fn apply(
