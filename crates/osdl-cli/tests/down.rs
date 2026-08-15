@@ -40,10 +40,7 @@ fn migrate_down_prints_rollback_sql_without_db() {
 
     // Desired schema without `Comment` -> the rollback should DROP it.
     let desired = dir.join("nocomment.osdl");
-    let _ = std::fs::write(
-        &desired,
-        "User\n  id uuid -pk\n  email string -uniq\n",
-    );
+    let _ = std::fs::write(&desired, "User\n  id uuid -pk\n  email string -uniq\n");
     let out = osdl()
         .arg("migrate")
         .arg("down")
