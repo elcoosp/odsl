@@ -57,7 +57,7 @@ osdl build --target mongo               # emit Mongo structs + jsonSchema
 osdl migrate plan                      # print the migration plan
 osdl migrate plan --apply              # print plan and update osdl.lock
 osdl migrate create --out migrations   # write migrations/<ts>_<slug>.sql
-osdl migrate create --sea-orm          # ...as SeaORM up/down Rust modules
+osdl migrate create --sea-orm          # ...a full sea-orm-migration crate (no raw SQL)
 osdl migrate up --db-url sqlite:///app.db?mode=rwc     # apply to a live DB
 osdl migrate up --db-url postgres://localhost/app       # ...or Postgres
 osdl migrate up --db-url mongodb://localhost:27017/app # ...or MongoDB
@@ -93,8 +93,12 @@ cargo fmt  --all
   collection names are shared with the renderers via `osdl_core::naming`, so
   generated code and migrations always agree.
 * **Migration files** — `osdl migrate create` renders the same plan to
-  timestamped `migrations/<ts>_<slug>.sql` (with `up`/`down` sections) or,
-  with `--sea-orm`, a SeaORM `Migrator` `up`/`down` Rust module, so the diff is
-  also persisted as reviewable, replayable files (not just executed live).
+  timestamped `migrations/<ts>_<slug>.sql` (with `up`/`down` sections). With
+  `--sea-orm` it scaffolds a **full `sea-orm-migration` crate** under
+  `migrations/` (Cargo.toml, `src/lib.rs` `Migrator`, `src/main.rs` CLI, and one
+  `src/m<ts>_<slug>.rs` per diff) using pure SeaQuery builders
+  (`Table::create()`, `schema::*` helpers, `ForeignKey::create()`) — no raw SQL,
+  portable across SQLite/Postgres/MySQL. Accumulating diffs append new `m*.rs`
+  files and re-list them in the `Migrator`.
 * **DRY/KISS** — the `CodeRenderer` trait is the only extension point; adding
   a backend means implementing one `render` method.
