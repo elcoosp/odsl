@@ -157,7 +157,10 @@ pub fn op_to_sql(
             }
         }
         MigrationOp::DropModel { model } => {
-            vec![format!("DROP TABLE {}", quote_ident_for(dialect, &table_name(model)))]
+            vec![format!(
+                "DROP TABLE {}",
+                quote_ident_for(dialect, &table_name(model))
+            )]
         }
         MigrationOp::AddField {
             model,

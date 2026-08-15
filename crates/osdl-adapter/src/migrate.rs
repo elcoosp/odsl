@@ -147,9 +147,10 @@ fn render_sql(
 fn down_sql(dialect: SqlDialect, op: &MigrationOp) -> Option<String> {
     use crate::naming::{quote_ident_for, table_name};
     match op {
-        MigrationOp::CreateModel { model } => {
-            Some(format!("DROP TABLE {}", quote_ident_for(dialect, &table_name(model))))
-        }
+        MigrationOp::CreateModel { model } => Some(format!(
+            "DROP TABLE {}",
+            quote_ident_for(dialect, &table_name(model))
+        )),
         MigrationOp::DropModel { .. } => None, // cannot recreate without prior schema
         MigrationOp::AddField { model, field, .. } => Some(format!(
             "ALTER TABLE {} DROP COLUMN {}",

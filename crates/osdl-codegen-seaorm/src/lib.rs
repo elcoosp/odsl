@@ -73,7 +73,84 @@ fn render_model(model: &Model, target: Target) -> Result<String, OsdlError> {
         #(#enum_defs)*
     };
 
+    // Model-level composite indexes / unique constraints.
+    let index_tokens = render_indexes(model);
+    let tokens = if let Some((attr, defs)) = index_tokens {
+        quote! {
+            #attr
+            #tokens
+            #defs
+        }
+    } else {
+        tokens
+    };
+
     Ok(format_tokens(tokens))
+}
+
+/// Emit SeaORM index support for model-level `-index`/`-uniq` constraints.
+///
+/// Returns `(attribute, Index_impl)` where `attribute` is the
+/// `#[sea_orm(indexes(<Name>))]` placed on the `Model` struct and `Index_impl`
+/// is the `Index` struct defining the comprised columns. When the model has no
+/// indexes, returns `None` and no extra code is generated.
+fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
+    if model.indexes.is_empty() {
+        return None;
+    }
+    let names: Vec<TokenStream> = model
+        .indexes
+        .iter()
+        .map(|idx| {
+            let n = syn::Ident::new(&to_pascal_case(&idx.name), proc_macro2::Span::call_site());
+            quote! { #n }
+        })
+        .collect();
+    let attr = quote! { #[sea_orm(indexes(#(#names),*))] };
+    let defs: Vec<TokenStream> = model
+        .indexes
+        .iter()
+        .map(|idx| {
+            let name_ident =
+                syn::Ident::new(&to_pascal_case(&idx.name), proc_macro2::Span::call_site());
+            let name_str = idx.name.clone();
+            let unique = idx.unique;
+            let col_strs: Vec<TokenStream> = idx
+                .fields
+                .iter()
+                .map(|f| {
+                    let s = f.clone();
+                    quote! { #s }
+                })
+                .collect();
+            quote! {
+                #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+                pub struct #name_ident;
+
+                impl sea_orm::entity::IndexName for #name_ident {
+                    fn get_index_name(&self) -> &str {
+                        #name_str
+                    }
+                }
+
+                impl sea_orm::entity::Index for #name_ident {
+                    fn name(&self) -> Option<&str> {
+                        Some(#name_str)
+                    }
+                    fn unique(&self) -> bool {
+                        #unique
+                    }
+                    fn columns(&self) -> Vec<&str> {
+                        vec![#(#col_strs),*]
+                    }
+                    fn is_composite(&self) -> bool {
+                        true
+                    }
+                }
+            }
+        })
+        .collect();
+    Some((attr, quote! { #(#defs)* }))
 }
 
 fn render_field(field: &Field, _target: Target) -> TokenStream {

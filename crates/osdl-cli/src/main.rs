@@ -10,7 +10,6 @@
 
 #![allow(clippy::result_large_err)]
 
-use std::io::IsTerminal;
 use clap::{Parser, Subcommand};
 use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
@@ -23,6 +22,7 @@ use osdl_core::lockfile::Lockfile;
 use osdl_core::validator::CodeRenderer;
 use osdl_migrator::{plan_migration, read_lockfile, write_lockfile};
 use osdl_parser::parse;
+use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]

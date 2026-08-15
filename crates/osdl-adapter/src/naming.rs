@@ -5,8 +5,8 @@
 //! renderers on physical table/collection names. This module adds only the
 //! backend-specific wrappers and SQL identifier quoting.
 
-use osdl_core::to_snake_plural;
 use crate::sql::SqlDialect;
+use osdl_core::to_snake_plural;
 
 /// SQL table name: `snake_case` + plural (`users`, `blog_posts`).
 pub fn table_name(model: &str) -> String {
