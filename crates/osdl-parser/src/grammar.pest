@@ -4,6 +4,8 @@
 //!
 //! ```text
 //! # comments start with '#'
+//! use user                       # module import (unquoted, ::-separated)
+//! use billing::invoice
 //! User                  # model declaration (top-level, no indentation)
 //!   id uuid -pk         # field: name, type, intent flag(s)
 //!   email string -uniq
@@ -26,7 +28,13 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
+body    = { use_stmt | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
+
+// A module import: `use path::to::module` (unquoted, `::`-separated). Resolved
+// by the project loader into additional source files merged into one AST.
+use_stmt    = { use_kw ~ sp ~ module_path }
+use_kw      = @{ "use" }
+module_path = @{ ident ~ ("::" ~ ident)* }
 
 indent  = @{ (" " | "\t")* }
 

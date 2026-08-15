@@ -160,3 +160,85 @@ proptest! {
         prop_assert_eq!(model.fields().count(), unique.len() + 1);
     }
 }
+
+// --- Module system (`use`) ---
+
+#[test]
+fn records_use_declarations_single_file() {
+    let src = "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n";
+    let file = osdl_parser::parse_file(src).unwrap();
+    assert_eq!(file.uses, vec!["user".to_string(), "billing::invoice".to_string()]);
+    // The `use` lines are not modeled.
+    assert!(file.ast.model_by_name("user").is_none());
+    assert!(file.ast.model_by_name("Order").is_some());
+}
+
+#[test]
+fn resolves_and_merges_modules_via_use() {
+    let dir = std::env::temp_dir().join(format!("osdl-use-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let user_mod = dir.join("user.osdl");
+    let billing = dir.join("billing");
+    std::fs::create_dir_all(&billing).unwrap();
+    let invoice = billing.join("invoice.osdl");
+
+    std::fs::write(
+        &user_mod,
+        "User\n  id uuid -pk\n  email string -uniq\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &invoice,
+        "Invoice\n  id uuid -pk\n  total int\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &dir.join("schema.osdl"),
+        "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n  total int\n",
+    )
+    .unwrap();
+
+    let project = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap();
+    // All three models merged into one AST.
+    assert!(project.ast.model_by_name("User").is_some());
+    assert!(project.ast.model_by_name("Invoice").is_some());
+    assert!(project.ast.model_by_name("Order").is_some());
+    // References resolved across files.
+    let order_idx = project.ast.model_by_name("Order").unwrap();
+    let order = &project.ast.models[order_idx];
+    let user_field = order.fields().find(|(_, f)| f.name == "user").unwrap().1;
+    assert!(matches!(&user_field.ty, FieldType::Ref(r) if r.model == "User"));
+    // Both imported files recorded as sources.
+    assert_eq!(project.sources.len(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn use_detects_duplicate_model_across_files() {
+    let dir = std::env::temp_dir().join(format!("osdl-use-dup-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(&dir.join("a.osdl"), "User\n  id uuid -pk\n").unwrap();
+    std::fs::write(&dir.join("b.osdl"), "User\n  id uuid -pk\n").unwrap();
+    std::fs::write(
+        &dir.join("schema.osdl"),
+        "use a\nuse b\n",
+    )
+    .unwrap();
+    let err = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap_err();
+    assert!(matches!(err, OsdlError::Parse(_)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn use_cycle_is_safe() {
+    // A cycle of `use` must not infinite-loop; it resolves to a merged AST.
+    let dir = std::env::temp_dir().join(format!("osdl-use-cycle-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(&dir.join("a.osdl"), "use b\nA\n  id uuid -pk\n").unwrap();
+    std::fs::write(&dir.join("b.osdl"), "use a\nB\n  id uuid -pk\n").unwrap();
+    std::fs::write(&dir.join("schema.osdl"), "use a\n").unwrap();
+    let project = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap();
+    assert!(project.ast.model_by_name("A").is_some());
+    assert!(project.ast.model_by_name("B").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

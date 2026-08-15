@@ -35,6 +35,8 @@ enum RawToken {
         field: String,
     },
     Word(String),
+    /// A `use path::to::module` declaration (module import).
+    Use(String),
     /// A quoted string literal (`"..."`); the inner content (quotes stripped)
     /// is stored verbatim, e.g. `-default ""` yields `Quoted("")`.
     Quoted(String),
@@ -53,8 +55,16 @@ pub fn parse_and_resolve(src: &str) -> Result<Ast, OsdlError> {
     parse(src)
 }
 
-/// Parse OSDL source into a resolved [`Ast`].
-pub fn parse(src: &str) -> Result<Ast, OsdlError> {
+/// A single parsed source file: its AST plus the `use` declarations it makes.
+pub struct FileAst {
+    pub ast: Ast,
+    /// Module paths referenced via `use` (e.g. `billing::invoice`).
+    pub uses: Vec<String>,
+}
+
+/// Parse a single OSDL source file into an [`Ast`] (inference applied).
+/// `use` declarations are recorded but not resolved (see [`parse_project`]).
+pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     let pairs = grammar::OsdlParser::parse(Rule::file, src)
         .map_err(|e| OsdlError::Parse(ParseError::new(format!("parse error: {e}"))))?;
 
@@ -71,6 +81,7 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
 
     let mut ast = Ast::new();
     let mut current_model: Option<Model> = None;
+    let mut uses: Vec<String> = Vec::new();
 
     for pl in &parsed {
         // Comment-only / blank lines carry no tokens — skip them.
@@ -78,6 +89,11 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
             continue;
         }
         if pl.indent == 0 {
+            // A `use` declaration is not a model.
+            if let Some(RawToken::Use(path)) = pl.tokens.first() {
+                uses.push(path.clone());
+                continue;
+            }
             if let Some(m) = current_model.take() {
                 ast.add_model(m);
             }
@@ -146,7 +162,97 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
         ast.add_model(m);
     }
 
-    Ok(ast)
+    Ok(FileAst { ast, uses })
+}
+
+/// Parse OSDL source into a resolved [`Ast`]. `use` declarations are parsed
+/// but not resolved (single-file view). For multi-file module resolution use
+/// [`parse_project`].
+pub fn parse(src: &str) -> Result<Ast, OsdlError> {
+    Ok(parse_file(src)?.ast)
+}
+
+/// The result of resolving a project: the merged [`Ast`] plus every source
+/// file that contributed to it (entry first), in deterministic order. Used by
+/// the lockfile to Merkle-hash all inputs.
+#[derive(Debug)]
+pub struct Project {
+    pub ast: Ast,
+    pub sources: Vec<std::path::PathBuf>,
+}
+
+/// Resolve a project rooted at `root` (an `.osdl` file). Recursively follows
+/// `use` declarations, merging each imported file's models into a single AST.
+///
+/// Resolution rules:
+/// * `use a::b::c` maps to `<root_dir>/a/b/c.osdl` (also tries `<root_dir>/a/b/c`
+///   without extension and `<root_dir>/a/b/c/mod.osdl`).
+/// * A model name may not collide across files (returns an error).
+/// * Cycles are detected via a visited set.
+pub fn parse_project(root: &std::path::Path) -> Result<Project, OsdlError> {
+    let mut ast = Ast::new();
+    let mut sources: Vec<std::path::PathBuf> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    resolve_file(root, &mut ast, &mut sources, &mut visited)?;
+    Ok(Project { ast, sources })
+}
+
+fn resolve_file(
+    path: &std::path::Path,
+    ast: &mut Ast,
+    sources: &mut Vec<std::path::PathBuf>,
+    visited: &mut HashSet<String>,
+) -> Result<(), OsdlError> {
+    let canon = std::fs::canonicalize(path)
+        .map_err(|e| OsdlError::Io(std::io::Error::other(format!("reading {}: {e}", path.display()))))?;
+    let key = canon.to_string_lossy().to_string();
+    if !visited.insert(key.clone()) {
+        return Ok(()); // already merged (cycle guard)
+    }
+
+    let src = std::fs::read_to_string(&canon)
+        .map_err(|e| OsdlError::Io(std::io::Error::other(format!("reading {}: {e}", canon.display()))))?;
+    let file_ast = parse_file(&src)?;
+
+    // Merge this file's models, detecting collisions.
+    for (_, model) in file_ast.ast.models() {
+        if ast.model_by_name(&model.name).is_some() {
+            return Err(OsdlError::Parse(ParseError::new(format!(
+                "duplicate model `{}` (imported via `use` from {})",
+                model.name, canon.display()
+            ))));
+        }
+        ast.add_model(model.clone());
+    }
+    sources.push(canon.clone());
+
+    // Resolve imports relative to this file's directory.
+    let dir = canon.parent().unwrap_or_else(|| std::path::Path::new("."));
+    for use_path in &file_ast.uses {
+        let target = resolve_use_path(dir, use_path);
+        resolve_file(&target, ast, sources, visited)?;
+    }
+    Ok(())
+}
+
+/// Map `a::b::c` to a concrete `.osdl` path, trying a few conventions.
+fn resolve_use_path(dir: &std::path::Path, use_path: &str) -> std::path::PathBuf {
+    let rel = use_path.replace("::", "/");
+    let base = dir.join(&rel);
+    // Try, in order: <rel>.osdl, <rel>/mod.osdl, <rel> (bare).
+    let candidates = [
+        format!("{}.osdl", base.to_string_lossy()),
+        format!("{}/mod.osdl", base.to_string_lossy()),
+        base.to_string_lossy().to_string(),
+    ];
+    for c in &candidates {
+        let p = std::path::PathBuf::from(c);
+        if p.exists() {
+            return p;
+        }
+    }
+    // Default to the `.osdl` form even if it doesn't exist (error surfaces later).
+    std::path::PathBuf::from(format!("{}.osdl", base.to_string_lossy()))
 }
 
 fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
@@ -337,6 +443,7 @@ fn add_field_from_tokens(
                 ty = Some(FieldType::InferredRef(q.clone()));
             }
             RawToken::Name(_) => unreachable!("name only appears as first token"),
+            RawToken::Use(_) => unreachable!("use only appears at indent 0, not as a field"),
         }
     }
 
@@ -441,6 +548,16 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                             }
                         }
                         Rule::comment_part => { /* comments carry no tokens */ }
+                        Rule::use_stmt => {
+                            // Extract the module path from the `use_kw ~ sp ~ module_path`.
+                            let mut path = String::new();
+                            for u in b.into_inner() {
+                                if u.as_rule() == Rule::module_path {
+                                    path = u.as_str().to_string();
+                                }
+                            }
+                            tokens.push(RawToken::Use(path));
+                        }
                         _ => {}
                     }
                 }
