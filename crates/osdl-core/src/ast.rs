@@ -7,6 +7,7 @@
 use crate::types::{FieldType, FkAction, Intent, ScalarType};
 use la_arena::{Arena, Idx, RawIdx};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub type ModelIdx = Idx<Model>;
 pub type FieldIdx = Idx<Field>;
@@ -31,6 +32,15 @@ pub struct Ast {
     pub model_index: Vec<(String, ModelIdx)>,
     /// User-defined types (`type X = ...`), keyed by name.
     pub custom_types: Vec<(String, CustomType)>,
+    /// Doc comments (`///`) attached to models, keyed by model name. Multiple
+    /// consecutive `///` lines are joined with `\n`. Purely documentation —
+    /// excluded from structural/determinism hashing.
+    pub model_docs: HashMap<String, String>,
+    /// Doc comments (`///`) attached to fields, keyed by `(model, field)`.
+    pub field_docs: HashMap<(String, String), String>,
+    /// `-deprecated "reason"` annotations on fields, keyed by `(model, field)`.
+    /// The value is the human-readable deprecation reason.
+    pub field_deprecated: HashMap<(String, String), String>,
 }
 
 impl Ast {
@@ -69,6 +79,25 @@ impl Ast {
     pub fn add_custom_type(&mut self, ct: CustomType) {
         let name = ct.name.clone();
         self.custom_types.push((name, ct));
+    }
+
+    /// Doc comment attached to a model (`///`), if any.
+    pub fn model_doc(&self, model: &str) -> Option<&str> {
+        self.model_docs.get(model).map(|s| s.as_str())
+    }
+
+    /// Doc comment attached to a field (`///`), if any.
+    pub fn field_doc(&self, model: &str, field: &str) -> Option<&str> {
+        self.field_docs
+            .get(&(model.to_string(), field.to_string()))
+            .map(|s| s.as_str())
+    }
+
+    /// Deprecation reason for a field (`-deprecated "..."`), if any.
+    pub fn field_deprecation(&self, model: &str, field: &str) -> Option<&str> {
+        self.field_deprecated
+            .get(&(model.to_string(), field.to_string()))
+            .map(|s| s.as_str())
     }
 
     /// Number of fields across all models (used by benchmarks).

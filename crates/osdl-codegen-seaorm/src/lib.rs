@@ -36,7 +36,7 @@ impl CodeRenderer for SeaOrmRenderer {
         let mut files = Vec::new();
         for (_idx, model) in ast.models() {
             let module_name = model.name.to_ascii_lowercase();
-            let contents = render_model(model, self.target)?;
+            let contents = render_model(model, ast, self.target)?;
             files.push((format!("entity/{module_name}.rs"), contents));
         }
         // mod.rs exporting every model module.
@@ -46,21 +46,25 @@ impl CodeRenderer for SeaOrmRenderer {
     }
 }
 
-fn render_model(model: &Model, target: Target) -> Result<String, OsdlError> {
+fn render_model(model: &Model, ast: &Ast, target: Target) -> Result<String, OsdlError> {
     let table_name = to_snake_plural(&model.name);
 
     let mut field_defs: Vec<TokenStream> = Vec::new();
     let mut enum_defs: Vec<TokenStream> = Vec::new();
     for (_fidx, field) in model.fields() {
-        field_defs.push(render_field(field, target));
+        field_defs.push(render_field(field, ast, &model.name, target));
         if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
             enum_defs.push(render_active_enum(field));
         }
     }
 
+    // Model-level doc comment.
+    let model_doc = doc_attrs(ast.model_doc(&model.name));
+
     let tokens = quote! {
         use sea_orm::entity::prelude::*;
 
+        #model_doc
         #[sea_orm::model]
         #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
         #[sea_orm(table_name = #table_name)]
@@ -153,13 +157,22 @@ fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
     Some((attr, quote! { #(#defs)* }))
 }
 
-fn render_field(field: &Field, _target: Target) -> TokenStream {
+fn render_field(field: &Field, ast: &Ast, model_name: &str, _target: Target) -> TokenStream {
     let name = syn::Ident::new(&field.name, proc_macro2::Span::call_site());
 
+    // Doc comment + deprecation for this field.
+    let field_doc = doc_attrs(ast.field_doc(model_name, &field.name));
+    let deprecated_doc = if let Some(reason) = ast.field_deprecation(model_name, &field.name) {
+        quote! { #[deprecated = #reason] }
+    } else {
+        quote! {}
+    };
     // `-virtual` fields are computed/serialized only: not a database column.
     if field.has(Intent::Virtual) {
         let ty = rust_type_for_field(field, _target);
         return quote! {
+            #field_doc
+            #deprecated_doc
             // virtual (computed/serialized-only; not stored in the database)
             pub #name: #ty,
         };
@@ -172,6 +185,8 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
     {
         let te = syn::Ident::new(&target.to_ascii_lowercase(), proc_macro2::Span::call_site());
         return quote! {
+            #field_doc
+            #deprecated_doc
             #[sea_orm(has_many)]
             pub #name: HasMany<super::#te::Entity>,
         };
@@ -190,6 +205,8 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
         );
         let _targets = &field.polymorphic_targets;
         return quote! {
+            #field_doc
+            #deprecated_doc
             pub #ty_type: String,
             pub #ty_id: Uuid,
         };
@@ -210,6 +227,8 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
             syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
         let rel_name = syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
         return quote! {
+            #field_doc
+            #deprecated_doc
             pub #fk_col: #fk_ty,
             #[sea_orm(belongs_to, from = #fk_col_str, to = #ref_f_str)]
             pub #rel_name: HasOne<super::#target_module::Entity>,
@@ -243,6 +262,8 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
         let col_ty = enum_ident.clone();
         let default_attr = default_attr(field);
         return quote! {
+            #field_doc
+            #deprecated_doc
             #(#attrs)*
             #[sea_orm(active_enum = #enum_ident)]
             #default_attr
@@ -262,6 +283,8 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
         quote! {}
     };
     quote! {
+        #field_doc
+        #deprecated_doc
         #(#attrs)*
         #default_attr
         #check_doc
@@ -269,7 +292,23 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
     }
 }
 
-/// Build the SeaORM `default_value` attribute for a field, if any.
+/// Build `#[doc = "..."]` attributes for a multi-line doc comment.
+/// Returns an empty token stream when `doc` is `None`.
+fn doc_attrs(doc: Option<&str>) -> TokenStream {
+    match doc {
+        Some(text) => {
+            let lines: Vec<TokenStream> = text
+                .lines()
+                .map(|l| {
+                    let line = l.trim_end().to_string();
+                    quote! { #[doc = #line] }
+                })
+                .collect();
+            quote! { #(#lines)* }
+        }
+        None => quote! {},
+    }
+}
 /// `now` on temporal columns maps to the portable `CURRENT_TIMESTAMP`.
 fn default_attr(field: &Field) -> TokenStream {
     let Some(value) = &field.default_value else {
@@ -625,5 +664,30 @@ mod tests {
         // polymorphic expands to target_type + target_id pair.
         assert!(comment_rs.contains("TargetType: String"));
         assert!(comment_rs.contains("TargetId: Uuid"));
+    }
+
+    #[test]
+    fn renders_doc_comments_and_deprecation() {
+        let ast = compile(
+            "/// A registered account holder.
+User
+  id uuid -pk
+  /// The user's primary email address.
+  email string -uniq -deprecated \"use contactEmail instead\"
+",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        // Model-level doc becomes a `///` doc comment on the struct.
+        assert!(user_rs.contains("A registered account holder."));
+        // Field doc + deprecation on email.
+        assert!(user_rs.contains("The user's primary email address."));
+        assert!(user_rs.contains("#[deprecated = \"use contactEmail instead\"]"));
     }
 }

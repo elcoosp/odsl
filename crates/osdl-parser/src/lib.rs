@@ -54,6 +54,8 @@ struct ParsedLine {
     line_no: usize,
     byte_start: usize,
     byte_end: usize,
+    /// Doc-comment text from a `///` line, attached to the next declaration.
+    doc: Option<String>,
 }
 
 /// Parse OSDL source into a resolved [`Ast`] (inference applied).
@@ -112,8 +114,20 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     let mut ast = Ast::new();
     let mut current_model: Option<Model> = None;
     let mut uses: Vec<String> = Vec::new();
+    // Doc comment (`///`) pending attachment to the next model/field declaration.
+    let mut pending_doc: Option<String> = None;
 
     for pl in &parsed {
+        // A `///` doc-comment line attaches to the next declaration. Consecutive
+        // `///` lines accumulate into one multi-line doc. It carries no structural
+        // tokens, so this check runs *before* the empty-token skip.
+        if let Some(doc) = &pl.doc {
+            pending_doc = Some(match pending_doc.take() {
+                Some(prev) => format!("{prev}\n{doc}"),
+                None => doc.clone(),
+            });
+            continue;
+        }
         // Comment-only / blank lines carry no tokens — skip them.
         if pl.tokens.is_empty() {
             continue;
@@ -142,6 +156,10 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                     ));
                 }
             };
+            // Attach any pending doc comment to this model.
+            if let Some(doc) = pending_doc.take() {
+                ast.model_docs.insert(name.clone(), doc);
+            }
             let mut model = Model {
                 name,
                 fields: la_arena::Arena::new(),
@@ -184,7 +202,12 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
             if capture_model_index(m, &pl.tokens) {
                 continue;
             }
-            add_field_from_tokens(
+            // Record the (model, field) key for doc/deprecation attachment.
+            let field_name = match pl.tokens.first() {
+                Some(RawToken::Name(n)) | Some(RawToken::Word(n)) => n.clone(),
+                _ => String::new(),
+            };
+            let (deprecated, _) = add_field_from_tokens(
                 m,
                 &pl.tokens,
                 &known_models,
@@ -194,6 +217,15 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 pl.byte_end,
                 src,
             )?;
+            // Attach any pending doc comment to this field.
+            if let Some(doc) = pending_doc.take() {
+                ast.field_docs
+                    .insert((m.name.clone(), field_name.clone()), doc);
+            }
+            if let Some(reason) = deprecated {
+                ast.field_deprecated
+                    .insert((m.name.clone(), field_name), reason);
+            }
         }
     }
     if let Some(m) = current_model.take() {
@@ -344,7 +376,7 @@ fn add_field_from_tokens(
     byte_start: usize,
     byte_end: usize,
     src: &str,
-) -> Result<(), OsdlError> {
+) -> Result<(Option<String>, Option<String>), OsdlError> {
     let mut iter = tokens.iter().peekable();
 
     let name = match iter.peek() {
@@ -375,8 +407,10 @@ fn add_field_from_tokens(
     let mut capturing_polymorphic = false;
     let mut capturing_ondelete = false;
     let mut capturing_onupdate = false;
+    let mut capturing_deprecated = false;
     let mut on_delete: Option<FkAction> = None;
     let mut on_update: Option<FkAction> = None;
+    let mut deprecated: Option<String> = None;
     // If the field's type is a custom type, record its name and inherit its
     // base scalar + constraints.
     let mut custom_type: Option<String> = None;
@@ -426,6 +460,12 @@ fn add_field_from_tokens(
                 if f == "-onupdate" {
                     intents.push(Intent::OnUpdate);
                     capturing_onupdate = true;
+                    continue;
+                }
+                if f == "-deprecated" {
+                    // The reason follows as a separate quoted/word token
+                    // (e.g. `-deprecated "use contactEmail instead"`).
+                    capturing_deprecated = true;
                     continue;
                 }
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -503,6 +543,11 @@ fn add_field_from_tokens(
                     );
                     continue;
                 }
+                if capturing_deprecated {
+                    capturing_deprecated = false;
+                    deprecated = Some(w.trim().to_string());
+                    continue;
+                }
                 if capturing_m2m {
                     capturing_m2m = false;
                     m2m_target = Some(w.trim().to_string());
@@ -555,6 +600,11 @@ fn add_field_from_tokens(
                     check_expr = Some(q.clone());
                     continue;
                 }
+                if capturing_deprecated {
+                    capturing_deprecated = false;
+                    deprecated = Some(q.clone());
+                    continue;
+                }
                 // A bare quoted string as a type/ref token is unsupported;
                 // treat it as an inferred reference name (best-effort).
                 ty = Some(FieldType::InferredRef(q.clone()));
@@ -586,7 +636,7 @@ fn add_field_from_tokens(
         on_update,
         line: line_no,
     });
-    Ok(())
+    Ok((deprecated, None))
 }
 
 /// Build a [`CustomType`] from the RHS tokens of a `type X = ...` declaration.
@@ -740,6 +790,7 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
 
     let mut indent = 0usize;
     let mut tokens = Vec::new();
+    let mut doc_accum: Option<String> = None;
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::indent => indent = inner.as_str().chars().count(),
@@ -773,6 +824,18 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                             }
                         }
                         Rule::comment_part => { /* comments carry no tokens */ }
+                        Rule::doc_comment => {
+                            // Strip the leading `///` and surrounding whitespace.
+                            let raw = b.as_str();
+                            let text = raw.trim_start_matches("///").trim().to_string();
+                            // Accumulate into the line's doc (join multiple `///`).
+                            if let Some(existing) = &mut doc_accum {
+                                existing.push('\n');
+                                existing.push_str(&text);
+                            } else {
+                                doc_accum = Some(text);
+                            }
+                        }
                         Rule::use_stmt => {
                             // Extract the module path from the `use_kw ~ sp ~ module_path`.
                             let mut path = String::new();
@@ -847,6 +910,7 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
         line_no,
         byte_start,
         byte_end,
+        doc: doc_accum,
     })
 }
 

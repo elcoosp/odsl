@@ -306,3 +306,66 @@ Post
     let err = parse(src).unwrap_err();
     assert!(matches!(err, OsdlError::Parse(_)));
 }
+
+#[test]
+fn parses_model_and_field_doc_comments() {
+    let src = "/// A registered account holder.
+User
+  /// The user's primary email address.
+  email string -uniq
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    assert_eq!(ast.model_doc("User"), Some("A registered account holder."));
+    let email = find_field(user, "email");
+    assert_eq!(
+        ast.field_doc("User", "email"),
+        Some("The user's primary email address.")
+    );
+}
+
+#[test]
+fn parses_multi_line_doc_comment() {
+    let src = "/// First line.
+/// Second line.
+User
+  id uuid -pk
+";
+    let ast = parse(src).unwrap();
+    assert_eq!(ast.model_doc("User"), Some("First line.\nSecond line."));
+}
+
+#[test]
+fn parses_deprecated_field_directive() {
+    let src = "User
+  id uuid -pk
+  email string -deprecated \"use contactEmail instead\"
+  contactEmail string
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    let email = find_field(user, "email");
+    assert_eq!(
+        ast.field_deprecation("User", "email"),
+        Some("use contactEmail instead")
+    );
+    // The replacement field is not deprecated.
+    let contact = find_field(user, "contactEmail");
+    assert_eq!(ast.field_deprecation("User", "contactEmail"), None);
+}
+
+#[test]
+fn doc_comments_do_not_alter_structure() {
+    let src = "/// doc
+User
+  /// field doc
+  id uuid -pk
+  email string -uniq -deprecated \"x\"
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    // No extra fields/fields created by docs.
+    assert_eq!(user.fields.len(), 2);
+    assert_eq!(ast.model_doc("User"), Some("doc"));
+    assert_eq!(ast.field_doc("User", "id"), Some("field doc"));
+}

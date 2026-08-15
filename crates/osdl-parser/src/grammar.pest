@@ -28,7 +28,7 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { use_stmt | type_decl | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
+body    = { use_stmt | type_decl | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | doc_comment | "" }
 
 // A module import: `use path::to::module` (unquoted, `::`-separated). Resolved
 // by the project loader into additional source files merged into one AST.
@@ -65,6 +65,11 @@ ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident      = @{ ident_char+ }
 
 comment_part = { "#" ~ (!newline_char ~ ANY)* }
+
+// A documentation comment: `/// text`. Attached to the *next* model or field
+// declaration (whichever follows, at the matching indent). Multiple consecutive
+// `///` lines are accumulated. Not a structural token — purely documentation.
+doc_comment = { "///" ~ (!newline_char ~ ANY)* }
 
 newline      = _{ "\r\n" | "\n" | "\r" }
 newline_char = _{ "\n" | "\r" }

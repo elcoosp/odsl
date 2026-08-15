@@ -34,9 +34,17 @@ fn render(ast: &Ast) -> String {
         if i > 0 {
             out.push('\n');
         }
+        // Model-level doc comment.
+        if let Some(doc) = ast.model_doc(&m.name) {
+            for line in doc.lines() {
+                out.push_str("/// ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
         out.push_str(&m.name);
         out.push('\n');
-        out.push_str(&render_fields(m));
+        out.push_str(&render_fields(m, ast));
         out.push_str(&render_indexes(m));
     }
     // Each model block ends in a single newline; the inter-model separator
@@ -48,7 +56,7 @@ fn render(ast: &Ast) -> String {
     out
 }
 
-fn render_fields(m: &Model) -> String {
+fn render_fields(m: &Model, ast: &Ast) -> String {
     let mut fields: Vec<&Field> = m.fields().map(|(_, f)| f).collect();
     // PK first, then alphabetical by name.
     fields.sort_by(|a, b| {
@@ -63,6 +71,14 @@ fn render_fields(m: &Model) -> String {
 
     let mut out = String::new();
     for f in fields {
+        // Field-level doc comment.
+        if let Some(doc) = ast.field_doc(&m.name, &f.name) {
+            for line in doc.lines() {
+                out.push_str("  /// ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
         out.push_str("  ");
         out.push_str(&f.name);
         out.push(' ');
@@ -92,6 +108,11 @@ fn render_fields(m: &Model) -> String {
         if !f.polymorphic_targets.is_empty() {
             out.push_str(" -polymorphic ");
             out.push_str(&f.polymorphic_targets.join(","));
+        }
+        if let Some(reason) = ast.field_deprecation(&m.name, &f.name) {
+            out.push_str(" -deprecated \"");
+            out.push_str(reason);
+            out.push('"');
         }
         out.push('\n');
     }
@@ -271,5 +292,34 @@ mod tests {
             ],
         )]));
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn preserves_doc_comments_and_deprecation() {
+        // Build an AST with docs/deprecation in the side-maps and format it.
+        let mut ast = build(&[
+            (
+                "User",
+                &[
+                    ("id", ScalarType::Uuid, &[Intent::Pk]),
+                    ("email", ScalarType::String, &[Intent::Uniq]),
+                ],
+            ),
+            ("Post", &[("id", ScalarType::Uuid, &[Intent::Pk])]),
+        ]);
+        ast.model_docs
+            .insert("User".into(), "A registered account holder.".into());
+        ast.field_docs.insert(
+            ("User".into(), "email".into()),
+            "The user's primary email address.".into(),
+        );
+        ast.field_deprecated
+            .insert(("User".into(), "email".into()), "use this".into());
+        let out = format_ast(&ast);
+        assert!(out.contains("/// A registered account holder."));
+        assert!(out.contains("/// The user's primary email address."));
+        assert!(out.contains("email string -uniq -deprecated \"use this\""));
+        // The deprecation reason is preserved on the field.
+        assert_eq!(ast.field_deprecation("User", "email"), Some("use this"));
     }
 }
