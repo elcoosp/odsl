@@ -117,7 +117,7 @@ fn render_sql(
         .ops
         .iter()
         .rev()
-        .filter_map(|op| down_sql(dialect, op))
+        .filter_map(|op| down_sql(dialect, op, target, current))
         .collect();
 
     let mut out = String::new();
@@ -143,8 +143,29 @@ fn render_sql(
     out
 }
 
+/// Render the `down` (rollback) DDL for a plan: the inverse op order with
+/// inverse statements. Each returned string is a complete statement (without a
+/// trailing semicolon) suitable for concatenation.
+pub fn render_down_sql(
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> Vec<String> {
+    plan.ops
+        .iter()
+        .rev()
+        .filter_map(|op| down_sql(dialect, op, target, current))
+        .collect()
+}
+
 /// Inverse DDL for a single op (used by the down section).
-fn down_sql(dialect: SqlDialect, op: &MigrationOp) -> Option<String> {
+fn down_sql(
+    dialect: SqlDialect,
+    op: &MigrationOp,
+    _target: &Lockfile,
+    _current: Option<&Lockfile>,
+) -> Option<String> {
     use crate::naming::{quote_ident_for, table_name};
     match op {
         MigrationOp::CreateModel { model } => Some(format!(

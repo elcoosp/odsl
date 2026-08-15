@@ -1,0 +1,16 @@
+[package]
+name = "osdl-codegen-openapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+osdl-core = { workspace = true }
+osdl-parser = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+osdl-core = { workspace = true }
+osdl-parser = { workspace = true }

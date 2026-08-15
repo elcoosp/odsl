@@ -3030,10 +3030,14 @@ dependencies = [
  "notify",
  "osdl-adapter",
  "osdl-codegen",
+ "osdl-codegen-graphql",
  "osdl-codegen-mongo",
+ "osdl-codegen-openapi",
  "osdl-codegen-seaorm",
+ "osdl-codegen-typescript",
  "osdl-core",
  "osdl-lsp",
+ "osdl-mcp",
  "osdl-migrator",
  "osdl-parser",
  "tokio",
@@ -3053,6 +3057,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "osdl-codegen-graphql"
+version = "0.1.0"
+dependencies = [
+ "osdl-core",
+ "osdl-parser",
+ "serde",
+]
+
+[[package]]
 name = "osdl-codegen-mongo"
 version = "0.1.0"
 dependencies = [
@@ -3067,6 +3080,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "osdl-codegen-openapi"
+version = "0.1.0"
+dependencies = [
+ "osdl-core",
+ "osdl-parser",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "osdl-codegen-seaorm"
 version = "0.1.0"
 dependencies = [
@@ -3078,6 +3101,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "osdl-codegen-typescript"
+version = "0.1.0"
+dependencies = [
+ "osdl-core",
+ "osdl-parser",
+ "serde",
 ]
 
 [[package]]
@@ -3106,6 +3138,22 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "osdl-mcp"
+version = "0.1.0"
+dependencies = [
+ "osdl-codegen-graphql",
+ "osdl-codegen-mongo",
+ "osdl-codegen-openapi",
+ "osdl-codegen-seaorm",
+ "osdl-codegen-typescript",
+ "osdl-core",
+ "osdl-parser",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

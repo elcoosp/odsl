@@ -55,6 +55,20 @@ pub trait SchemaAdapter: Send + Sync {
         current: Option<&Lockfile>,
     ) -> Result<Vec<String>, AdapterError>;
 
+    /// Apply the *rollback* (down) plan: revert the live database from `target`
+    /// back to `current`. `plan` is the forward plan (`MigrationPlan::diff(
+    /// target, current)`); each op is mapped to its inverse statement/command
+    /// inside the adapter. For SQL this executes the reversed DDL; for Mongo it
+    /// drops created collections / removes added fields / re-emits the prior
+    /// validator for dropped/altered fields. Returns the statements/commands
+    /// executed, in order, for logging/audit.
+    async fn revert(
+        &self,
+        plan: &MigrationPlan,
+        target: &Lockfile,
+        current: Option<&Lockfile>,
+    ) -> Result<Vec<String>, AdapterError>;
+
     /// Create the idempotency history table (`_osdl_migrations`) if absent.
     async fn ensure_history_table(&self) -> Result<(), AdapterError> {
         Ok(())
@@ -227,6 +241,30 @@ impl SchemaAdapter for SqlAdapter {
         }
         Ok(applied)
     }
+
+    async fn revert(
+        &self,
+        plan: &MigrationPlan,
+        target: &Lockfile,
+        current: Option<&Lockfile>,
+    ) -> Result<Vec<String>, AdapterError> {
+        let mut applied: Vec<String> = Vec::new();
+        // Inverse op order with inverse statements (drop what `up` created, etc.).
+        for stmt in migrate::render_down_sql(self.dialect, plan, target, current) {
+            // Skip informational comments (backend-specific ALTER COLUMN guards).
+            if stmt.trim_start().starts_with("--") {
+                applied.push(stmt);
+                continue;
+            }
+            self.conn
+                .execute_unprepared(&stmt)
+                .await
+                .map_err(|e| AdapterError::Exec(format!("{}: {}", stmt, e)))?;
+            tracing::info!(sql = %stmt, "executed rollback DDL");
+            applied.push(stmt);
+        }
+        Ok(applied)
+    }
 }
 
 /// MongoDB adapter.
@@ -249,6 +287,31 @@ impl SchemaAdapter for MongoAdapter {
         let mut applied = Vec::new();
         for op in &plan.ops {
             let mongo_ops = mongo::op_to_mongo(op, target);
+            for mop in &mongo_ops {
+                let desc = format!("{mop:?}");
+                mongo::apply_ops(&self.db, std::slice::from_ref(mop)).await?;
+                applied.push(desc);
+            }
+        }
+        Ok(applied)
+    }
+
+    async fn revert(
+        &self,
+        plan: &MigrationPlan,
+        _target: &Lockfile,
+        current: Option<&Lockfile>,
+    ) -> Result<Vec<String>, AdapterError> {
+        // Fall back to an empty baseline when no prior lockfile is supplied.
+        let empty = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![],
+        };
+        let current = current.unwrap_or(&empty);
+        let mut applied = Vec::new();
+        for op in &plan.ops {
+            let mongo_ops = mongo::op_to_mongo_down(op, current);
             for mop in &mongo_ops {
                 let desc = format!("{mop:?}");
                 mongo::apply_ops(&self.db, std::slice::from_ref(mop)).await?;

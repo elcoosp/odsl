@@ -126,6 +126,53 @@ pub fn op_to_mongo(op: &MigrationOp, target: &Lockfile) -> Vec<MongoOp> {
     }
 }
 
+/// Translate a [`MigrationOp`] into the inverse (down) Mongo command(s),
+/// reverting `target -> current`. The forward op was applied against `target`;
+/// rolling it back means: drop collections `up` created, remove fields `up`
+/// added, and re-emit the *prior* (`current`) validator for fields/models that
+/// `up` altered or dropped (so the schema returns to `current`).
+pub fn op_to_mongo_down(op: &MigrationOp, current: &Lockfile) -> Vec<MongoOp> {
+    match op {
+        MigrationOp::CreateModel { model } => vec![MongoOp::Drop {
+            name: collection_name(model),
+        }],
+        MigrationOp::DropModel { model } => {
+            if let Some(m) = current.model_by_name(model) {
+                vec![MongoOp::Create {
+                    name: collection_name(model),
+                    validator: build_validator(m),
+                }]
+            } else {
+                vec![]
+            }
+        }
+        MigrationOp::AddField { model, field, .. } => vec![MongoOp::Unset {
+            name: collection_name(model),
+            field: field.clone(),
+        }],
+        MigrationOp::DropField { model, .. } => {
+            if let Some(m) = current.model_by_name(model) {
+                vec![MongoOp::CollMod {
+                    name: collection_name(model),
+                    validator: build_validator(m),
+                }]
+            } else {
+                vec![]
+            }
+        }
+        MigrationOp::AlterField { model, .. } => {
+            if let Some(m) = current.model_by_name(model) {
+                vec![MongoOp::CollMod {
+                    name: collection_name(model),
+                    validator: build_validator(m),
+                }]
+            } else {
+                vec![]
+            }
+        }
+    }
+}
+
 /// Execute the planned Mongo ops against `db`.
 pub async fn apply_ops(db: &Database, ops: &[MongoOp]) -> Result<(), AdapterError> {
     for op in ops {
@@ -257,5 +304,54 @@ mod tests {
         };
         let mongo_ops = op_to_mongo(&op, &lf);
         assert!(matches!(mongo_ops[0], MongoOp::Unset { .. }));
+    }
+
+    #[test]
+    fn down_create_drops_collection() {
+        // The forward op created `users`; rolling back must drop it.
+        let lf = Lockfile {
+            version: 1,
+            checksum: String::new(),
+            models: vec![user_model()],
+        };
+        let op = MigrationOp::CreateModel {
+            model: "User".into(),
+        };
+        let down = op_to_mongo_down(&op, &lf);
+        assert!(matches!(&down[0], MongoOp::Drop { name } if name == "users"));
+    }
+
+    #[test]
+    fn down_drop_model_recreates_collection() {
+        // The forward op dropped `users`; rolling back must recreate it with the
+        // prior validator (sourced from `current`).
+        let lf = Lockfile {
+            version: 1,
+            checksum: String::new(),
+            models: vec![user_model()],
+        };
+        let op = MigrationOp::DropModel {
+            model: "User".into(),
+        };
+        let down = op_to_mongo_down(&op, &lf);
+        assert!(matches!(&down[0], MongoOp::Create { name, .. } if name == "users"));
+    }
+
+    #[test]
+    fn down_add_field_uses_unset() {
+        let lf = Lockfile {
+            version: 1,
+            checksum: String::new(),
+            models: vec![user_model()],
+        };
+        let op = MigrationOp::AddField {
+            model: "User".into(),
+            field: "nick".into(),
+            ty: "string".into(),
+            nullable: true,
+            uniq: false,
+        };
+        let down = op_to_mongo_down(&op, &lf);
+        assert!(matches!(&down[0], MongoOp::Unset { field, .. } if field == "nick"));
     }
 }

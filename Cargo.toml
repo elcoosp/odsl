@@ -5,10 +5,14 @@ members = [
     "crates/osdl-codegen",
     "crates/osdl-codegen-seaorm",
     "crates/osdl-codegen-mongo",
+    "crates/osdl-codegen-typescript",
+    "crates/osdl-codegen-graphql",
+    "crates/osdl-codegen-openapi",
     "crates/osdl-migrator",
     "crates/osdl-adapter",
     "crates/osdl-cli",
     "crates/osdl-lsp",
+    "crates/osdl-mcp",
 ]
 resolver = "2"
 
@@ -67,6 +71,10 @@ osdl-parser = { path = "crates/osdl-parser" }
 osdl-codegen = { path = "crates/osdl-codegen" }
 osdl-codegen-seaorm = { path = "crates/osdl-codegen-seaorm" }
 osdl-codegen-mongo = { path = "crates/osdl-codegen-mongo" }
+osdl-codegen-typescript = { path = "crates/osdl-codegen-typescript" }
+osdl-codegen-graphql = { path = "crates/osdl-codegen-graphql" }
+osdl-codegen-openapi = { path = "crates/osdl-codegen-openapi" }
 osdl-migrator = { path = "crates/osdl-migrator" }
 osdl-adapter = { path = "crates/osdl-adapter" }
 osdl-lsp = { path = "crates/osdl-lsp" }
+osdl-mcp = { path = "crates/osdl-mcp" }

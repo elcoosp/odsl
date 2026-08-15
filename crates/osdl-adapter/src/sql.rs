@@ -114,6 +114,11 @@ fn column_def(dialect: SqlDialect, model: &LockModel, field: &osdl_core::ast::Lo
     if is_uniq && !is_pk {
         def.push_str(" UNIQUE");
     }
+    if let Some(expr) = &field.check_expr
+        && !expr.trim().is_empty()
+    {
+        def.push_str(&format!(" CHECK ({})", expr.trim()));
+    }
     let _ = model;
     def
 }
@@ -196,6 +201,8 @@ pub fn op_to_sql(
                         enum_variants: vec![],
                         default_value: None,
                         m2m_target: None,
+                        check_expr: None,
+                        polymorphic_targets: vec![],
                     });
                 }
                 return sqlite_rebuild_sql(old, model, &fields);

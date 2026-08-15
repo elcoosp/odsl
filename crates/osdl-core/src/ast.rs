@@ -104,6 +104,10 @@ pub struct Field {
     pub default_value: Option<String>,
     /// Target model for a many-to-many relationship (`-m2m <Target>`).
     pub m2m_target: Option<String>,
+    /// Raw boolean expression for an inline CHECK constraint (`-check "age >= 18"`).
+    pub check_expr: Option<String>,
+    /// Target models for a polymorphic reference (`-polymorphic Post,Video`).
+    pub polymorphic_targets: Vec<String>,
     pub line: usize,
 }
 
@@ -153,6 +157,11 @@ pub struct LockField {
     /// Target model for a many-to-many relationship (`-m2m <Target>`); `None`
     /// when the field is not an m2m join.
     pub m2m_target: Option<String>,
+    /// Raw CHECK constraint expression (`-check "..."`); `None` when absent.
+    pub check_expr: Option<String>,
+    /// Target models for a polymorphic reference (`-polymorphic A,B`); empty
+    /// when the field is not polymorphic.
+    pub polymorphic_targets: Vec<String>,
 }
 
 impl LockModel {
@@ -185,6 +194,11 @@ impl Ast {
                         if let Some(t) = &f.m2m_target {
                             intents.push(format!("-m2m {t}"));
                         }
+                        // Encode polymorphic targets the same way.
+                        if !f.polymorphic_targets.is_empty() {
+                            intents
+                                .push(format!("-polymorphic {}", f.polymorphic_targets.join(",")));
+                        }
                         LockField {
                             name: f.name.clone(),
                             ty: f.type_keyword(),
@@ -192,6 +206,8 @@ impl Ast {
                             enum_variants: variants,
                             default_value: f.default_value.clone(),
                             m2m_target: f.m2m_target.clone(),
+                            check_expr: f.check_expr.clone(),
+                            polymorphic_targets: f.polymorphic_targets.clone(),
                         }
                     })
                     .collect();
@@ -259,6 +275,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 enum_variants: vec![],
                 default_value: None,
                 m2m_target: None,
+                check_expr: None,
+                polymorphic_targets: vec![],
             },
             LockField {
                 name: format!("{source_l}_id"),
@@ -267,6 +285,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 enum_variants: vec![],
                 default_value: None,
                 m2m_target: None,
+                check_expr: None,
+                polymorphic_targets: vec![],
             },
             LockField {
                 name: format!("{target_l}_id"),
@@ -275,6 +295,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 enum_variants: vec![],
                 default_value: None,
                 m2m_target: None,
+                check_expr: None,
+                polymorphic_targets: vec![],
             },
         ];
         fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -331,6 +353,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -357,6 +381,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 1,
         });
         let mut b = Model {
@@ -373,6 +399,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 1,
         });
         b.add_field(Field {
@@ -382,6 +410,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 2,
         });
         ast.add_model(a);

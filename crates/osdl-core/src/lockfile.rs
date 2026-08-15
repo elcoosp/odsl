@@ -82,6 +82,8 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         enum_variants: vec![],
         default_value: None,
         m2m_target: None,
+        check_expr: None,
+        polymorphic_targets: vec![],
     }
 }
 
@@ -94,6 +96,8 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         enum_variants: variants.iter().map(|s| s.to_string()).collect(),
         default_value: None,
         m2m_target: None,
+        check_expr: None,
+        polymorphic_targets: vec![],
     }
 }
 
@@ -120,6 +124,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 1,
         });
         user.add_field(Field {
@@ -129,6 +135,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 2,
         });
         ast.add_model(user);
@@ -176,6 +184,8 @@ mod tests {
             enum_variants: vec!["active".into(), "inactive".into()],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 2,
         });
         ast.add_model(user);
@@ -205,6 +215,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 2,
         });
         user.add_field(Field {
@@ -214,6 +226,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 3,
         });
         user.add_field(Field {
@@ -223,6 +237,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 4,
         });
         user.indexes.push(ModelIndex {
@@ -263,6 +279,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 1,
         });
         user.add_field(Field {
@@ -272,6 +290,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: Some("Post".into()),
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 2,
         });
         let mut post = Model {
@@ -288,6 +308,8 @@ mod tests {
             enum_variants: vec![],
             default_value: None,
             m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
             line: 4,
         });
         ast.add_model(user);
