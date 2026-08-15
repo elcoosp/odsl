@@ -10,6 +10,8 @@ pub enum Target {
     SeaOrmSqlite,
     /// SeaORM entities for Postgres.
     SeaOrmPostgres,
+    /// SeaORM entities for MySQL / MariaDB.
+    SeaOrmMysql,
     /// MongoDB Serde structs + `$jsonSchema` validators.
     Mongo,
 }
@@ -20,13 +22,17 @@ impl Target {
         match self {
             Target::SeaOrmSqlite => "seaorm-sqlite",
             Target::SeaOrmPostgres => "seaorm-postgres",
+            Target::SeaOrmMysql => "seaorm-mysql",
             Target::Mongo => "mongo",
         }
     }
 
     /// The logical family: SQL backends share relation semantics.
     pub fn is_sql(self) -> bool {
-        matches!(self, Target::SeaOrmSqlite | Target::SeaOrmPostgres)
+        matches!(
+            self,
+            Target::SeaOrmSqlite | Target::SeaOrmPostgres | Target::SeaOrmMysql
+        )
     }
 }
 
@@ -37,6 +43,7 @@ impl FromStr for Target {
         match s.to_ascii_lowercase().replace(['_', '-'], "-").as_str() {
             "seaorm" | "seaorm-sqlite" | "sqlite" => Ok(Target::SeaOrmSqlite),
             "seaorm-postgres" | "postgres" | "pg" => Ok(Target::SeaOrmPostgres),
+            "seaorm-mysql" | "mysql" | "mariadb" => Ok(Target::SeaOrmMysql),
             "mongo" | "mongodb" => Ok(Target::Mongo),
             other => Err(format!("unknown target `{other}`")),
         }
@@ -61,7 +68,12 @@ mod tests {
             <Target as FromStr>::from_str("SQLITE").unwrap(),
             Target::SeaOrmSqlite
         );
+        assert_eq!(
+            <Target as FromStr>::from_str("mysql").unwrap(),
+            Target::SeaOrmMysql
+        );
         assert!(<Target as FromStr>::from_str("oracle").is_err());
         assert_eq!(Target::Mongo.as_str(), "mongo");
+        assert_eq!(Target::SeaOrmMysql.as_str(), "seaorm-mysql");
     }
 }

@@ -6,6 +6,7 @@
 //! backend-specific wrappers and SQL identifier quoting.
 
 use osdl_core::to_snake_plural;
+use crate::sql::SqlDialect;
 
 /// SQL table name: `snake_case` + plural (`users`, `blog_posts`).
 pub fn table_name(model: &str) -> String {
@@ -18,9 +19,18 @@ pub fn collection_name(model: &str) -> String {
     to_snake_plural(model)
 }
 
-/// Quote an identifier for the target SQL dialect (double quotes, ANSI).
+/// Quote an identifier for the target SQL dialect. MySQL/MariaDB use backticks;
+/// SQLite and Postgres use double quotes (ANSI).
 pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Quote an identifier using a dialect-specific delimiter (backticks for MySQL).
+pub fn quote_ident_for(dialect: SqlDialect, name: &str) -> String {
+    match dialect {
+        SqlDialect::Mysql => format!("`{}`", name.replace('`', "``")),
+        _ => quote_ident(name),
+    }
 }
 
 #[cfg(test)]

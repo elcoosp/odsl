@@ -30,6 +30,7 @@ use sea_orm::ConnectionTrait;
 pub enum Backend {
     Sqlite,
     Postgres,
+    Mysql,
     Mongo,
 }
 
@@ -78,6 +79,7 @@ pub async fn connect(db_url: &str) -> Result<Box<dyn SchemaAdapter>, AdapterErro
         let backend = match dialect {
             sql::SqlDialect::Sqlite => Backend::Sqlite,
             sql::SqlDialect::Postgres => Backend::Postgres,
+            sql::SqlDialect::Mysql => Backend::Mysql,
         };
         let conn = sea_orm::Database::connect(db_url)
             .await

@@ -194,7 +194,7 @@ fn cmd_build(
 ) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
     let files = match target {
-        Target::SeaOrmSqlite | Target::SeaOrmPostgres => {
+        Target::SeaOrmSqlite | Target::SeaOrmPostgres | Target::SeaOrmMysql => {
             SeaOrmRenderer::new(target).render(&ast)?
         }
         Target::Mongo => MongoRenderer::new(target).render(&ast)?,
@@ -363,6 +363,7 @@ fn cmd_migrate_create(
     }
     let dialect = match target {
         Target::SeaOrmPostgres => SqlDialect::Postgres,
+        Target::SeaOrmMysql => SqlDialect::Mysql,
         _ => SqlDialect::Sqlite,
     };
     let format = if sea_orm {

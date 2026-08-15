@@ -295,11 +295,13 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
         (
-            SeaOrmPostgres,
+            SeaOrmPostgres | SeaOrmMysql,
             Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m,
         ) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
+        (SeaOrmMysql, Fulltext) => true,      // MySQL FULLTEXT index
+        (SeaOrmMysql, Partition) => false,    // partition requires table-level DDL here
         // Mongo supports these natively.
         (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m) => {
             true

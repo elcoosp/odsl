@@ -145,16 +145,16 @@ fn render_sql(
 
 /// Inverse DDL for a single op (used by the down section).
 fn down_sql(dialect: SqlDialect, op: &MigrationOp) -> Option<String> {
-    use crate::naming::{quote_ident, table_name};
+    use crate::naming::{quote_ident_for, table_name};
     match op {
         MigrationOp::CreateModel { model } => {
-            Some(format!("DROP TABLE {}", quote_ident(&table_name(model))))
+            Some(format!("DROP TABLE {}", quote_ident_for(dialect, &table_name(model))))
         }
         MigrationOp::DropModel { .. } => None, // cannot recreate without prior schema
         MigrationOp::AddField { model, field, .. } => Some(format!(
             "ALTER TABLE {} DROP COLUMN {}",
-            quote_ident(&table_name(model)),
-            quote_ident(field)
+            quote_ident_for(dialect, &table_name(model)),
+            quote_ident_for(dialect, field)
         )),
         MigrationOp::DropField { .. } => None,
         MigrationOp::AlterField { .. } => {
@@ -165,6 +165,9 @@ fn down_sql(dialect: SqlDialect, op: &MigrationOp) -> Option<String> {
                 }
                 SqlDialect::Postgres => {
                     "-- postgres: ALTER COLUMN TYPE rollback must be supplied manually".to_string()
+                }
+                SqlDialect::Mysql => {
+                    "-- mysql: ALTER COLUMN TYPE rollback must be supplied manually".to_string()
                 }
             })
         }
