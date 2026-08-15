@@ -153,15 +153,21 @@ fn init_tracing(verbose: u8) {
 
 fn load_ast(input: &std::path::Path, target: Target) -> Result<Ast, OsdlError> {
     let src = std::fs::read_to_string(input)
-        .map_err(|e| OsdlError::Io(format!("reading {}: {e}", input.display())))?;
+        .map_err(|e| io_err(format!("reading {}: {e}", input.display())))?;
     let ast = parse(&src)?;
     osdl_core::Validator::validate(&ast, Some(target))?;
     Ok(ast)
 }
 
+/// Build an [`OsdlError::Io`] from an ad-hoc message (e.g. a guard condition
+/// that is not a real `std::io::Error`). Real IO results propagate via `?`.
+fn io_err(msg: impl Into<String>) -> OsdlError {
+    OsdlError::Io(std::io::Error::new(std::io::ErrorKind::Other, msg.into()))
+}
+
 fn cmd_init(path: &std::path::Path) -> Result<(), OsdlError> {
     if path.exists() {
-        return Err(OsdlError::Io(format!("{} already exists", path.display())));
+        return Err(io_err(format!("{} already exists", path.display())));
     }
     let skeleton = "# OSDL schema\n# Run `osdl build` to generate backend code.\n\nUser\n  id uuid -pk\n  email string -uniq\n  created_at datetime -tz\n";
     std::fs::write(path, skeleton)?;
@@ -246,15 +252,15 @@ fn cmd_migrate_up(
 
     // Apply against a live database when a connection URL is provided.
     if let Some(url) = &db_url {
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| OsdlError::Io(format!("tokio runtime: {e}")))?;
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
         let target_lock = Lockfile::from_ast(&ast);
         let applied = runtime
             .block_on(osdl_adapter::connect(url))
-            .map_err(|e| OsdlError::Io(format!("connecting to {url}: {e}")))?;
+            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
         let statements = runtime
             .block_on(applied.apply(&plan, &target_lock))
-            .map_err(|e| OsdlError::Io(format!("applying migration: {e}")))?;
+            .map_err(|e| io_err(format!("applying migration: {e}")))?;
         for stmt in &statements {
             println!("  applied: {stmt}");
         }
@@ -299,7 +305,7 @@ fn cmd_migrate_create(
         MigrationFormat::Sql
     };
     let written = write_migration(out, format, dialect, &plan, &Lockfile::from_ast(&ast))
-        .map_err(|e| OsdlError::Io(format!("writing migration: {e}")))?;
+        .map_err(|e| io_err(format!("writing migration: {e}")))?;
     match written {
         Some(name) => {
             println!("generated {}/{}", out.display(), name);
