@@ -3,7 +3,7 @@
 
 use osdl_core::ast::Ast;
 use osdl_core::errors::{CompileErrorKind, OsdlError};
-use osdl_core::types::{FieldType, Intent, ScalarType};
+use osdl_core::types::{FieldType, FkAction, Intent, ScalarType};
 use osdl_parser::infer;
 use osdl_parser::parse;
 use proptest::prelude::*;
@@ -266,6 +266,42 @@ fn rejects_custom_type_without_scalar_base() {
     let src = "type Broken = NotAScalar
 User
   id uuid -pk
+";
+    let err = parse(src).unwrap_err();
+    assert!(matches!(err, OsdlError::Parse(_)));
+}
+
+#[test]
+fn parses_fk_referential_actions() {
+    let src = "User
+  id uuid -pk
+Post
+  id uuid -pk
+  author User.id -ondelete setnull -onupdate restrict
+";
+    let ast = parse(src).unwrap();
+    let post = find_model(&ast, "Post");
+    let author = find_field(post, "author");
+    assert_eq!(
+        author.ty,
+        FieldType::Ref(osdl_core::types::Reference {
+            model: "User".into(),
+            field: "id".into(),
+        })
+    );
+    assert!(author.has(Intent::OnDelete));
+    assert!(author.has(Intent::OnUpdate));
+    assert_eq!(author.on_delete, Some(FkAction::SetNull));
+    assert_eq!(author.on_update, Some(FkAction::Restrict));
+}
+
+#[test]
+fn rejects_invalid_on_delete_action() {
+    let src = "User
+  id uuid -pk
+Post
+  id uuid -pk
+  author User.id -ondelete bogus
 ";
     let err = parse(src).unwrap_err();
     assert!(matches!(err, OsdlError::Parse(_)));

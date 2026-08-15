@@ -4,7 +4,7 @@
 //! other cyclically (e.g. `User` -> `Post` -> `User`) without fighting the
 //! borrow checker. Nodes are addressed by stable [`Idx`] handles.
 
-use crate::types::{FieldType, Intent, ScalarType};
+use crate::types::{FieldType, FkAction, Intent, ScalarType};
 use la_arena::{Arena, Idx, RawIdx};
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +139,12 @@ pub struct Field {
     /// Name of the custom type (`type X = ...`) this field was declared with,
     /// if any. Used by renderers that emit newtype wrappers.
     pub custom_type: Option<String>,
+    /// Referential action on deletion of the referenced row (`-ondelete`).
+    /// `None` means "unspecified" and the SQL layer falls back to `Cascade`
+    /// (preserving historic behaviour).
+    pub on_delete: Option<FkAction>,
+    /// Referential action on update of the referenced key (`-onupdate`).
+    pub on_update: Option<FkAction>,
     pub line: usize,
 }
 
@@ -193,6 +199,12 @@ pub struct LockField {
     /// Target models for a polymorphic reference (`-polymorphic A,B`); empty
     /// when the field is not polymorphic.
     pub polymorphic_targets: Vec<String>,
+    /// Referential action on deletion of the referenced row (`-ondelete`);
+    /// `None` when unspecified.
+    pub on_delete: Option<String>,
+    /// Referential action on update of the referenced key (`-onupdate`);
+    /// `None` when unspecified.
+    pub on_update: Option<String>,
 }
 
 impl LockModel {
@@ -239,6 +251,8 @@ impl Ast {
                             m2m_target: f.m2m_target.clone(),
                             check_expr: f.check_expr.clone(),
                             polymorphic_targets: f.polymorphic_targets.clone(),
+                            on_delete: f.on_delete.map(|a| a.as_keyword().to_string()),
+                            on_update: f.on_update.map(|a| a.as_keyword().to_string()),
                         }
                     })
                     .collect();
@@ -308,6 +322,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 m2m_target: None,
                 check_expr: None,
                 polymorphic_targets: vec![],
+                on_delete: None,
+                on_update: None,
             },
             LockField {
                 name: format!("{source_l}_id"),
@@ -318,6 +334,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 m2m_target: None,
                 check_expr: None,
                 polymorphic_targets: vec![],
+                on_delete: None,
+                on_update: None,
             },
             LockField {
                 name: format!("{target_l}_id"),
@@ -328,6 +346,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 m2m_target: None,
                 check_expr: None,
                 polymorphic_targets: vec![],
+                on_delete: None,
+                on_update: None,
             },
         ];
         fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -387,6 +407,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -416,6 +438,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         let mut b = Model {
@@ -435,6 +459,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         b.add_field(Field {
@@ -447,6 +473,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         ast.add_model(a);

@@ -84,6 +84,8 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         m2m_target: None,
         check_expr: None,
         polymorphic_targets: vec![],
+        on_delete: None,
+        on_update: None,
     }
 }
 
@@ -98,6 +100,8 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         m2m_target: None,
         check_expr: None,
         polymorphic_targets: vec![],
+        on_delete: None,
+        on_update: None,
     }
 }
 
@@ -127,6 +131,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         user.add_field(Field {
@@ -139,6 +145,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         ast.add_model(user);
@@ -189,6 +197,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         ast.add_model(user);
@@ -221,6 +231,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         user.add_field(Field {
@@ -233,6 +245,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 3,
         });
         user.add_field(Field {
@@ -245,6 +259,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 4,
         });
         user.indexes.push(ModelIndex {
@@ -288,6 +304,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         user.add_field(Field {
@@ -300,6 +318,8 @@ mod tests {
             m2m_target: Some("Post".into()),
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         let mut post = Model {
@@ -319,6 +339,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 4,
         });
         ast.add_model(user);

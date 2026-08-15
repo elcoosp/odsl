@@ -179,6 +179,8 @@ mod tests {
                     m2m_target: None,
                     check_expr: None,
                     polymorphic_targets: vec![],
+                    on_delete: None,
+                    on_update: None,
                     line: 1,
                 });
             }
@@ -238,6 +240,8 @@ mod tests {
                 m2m_target: None,
                 check_expr: None,
                 polymorphic_targets: vec!["Post".into(), "Video".into()],
+                on_delete: None,
+                on_update: None,
                 line: 1,
             });
             let f = m.field_by_name("age").unwrap();

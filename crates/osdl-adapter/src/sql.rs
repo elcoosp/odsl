@@ -203,6 +203,8 @@ pub fn op_to_sql(
                         m2m_target: None,
                         check_expr: None,
                         polymorphic_targets: vec![],
+                        on_delete: None,
+                        on_update: None,
                     });
                 }
                 return sqlite_rebuild_sql(old, model, &fields);

@@ -12,7 +12,7 @@ pub mod infer;
 use infer::infer_field_type;
 use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex};
 use osdl_core::errors::{OsdlError, ParseError, Span};
-use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
+use osdl_core::types::{FieldType, FkAction, Intent, Reference, ScalarType};
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
 use std::collections::HashSet;
@@ -373,6 +373,10 @@ fn add_field_from_tokens(
     let mut capturing_m2m = false;
     let mut capturing_check = false;
     let mut capturing_polymorphic = false;
+    let mut capturing_ondelete = false;
+    let mut capturing_onupdate = false;
+    let mut on_delete: Option<FkAction> = None;
+    let mut on_update: Option<FkAction> = None;
     // If the field's type is a custom type, record its name and inherit its
     // base scalar + constraints.
     let mut custom_type: Option<String> = None;
@@ -410,6 +414,18 @@ fn add_field_from_tokens(
                     // (e.g. `-polymorphic Post,Video`).
                     intents.push(Intent::Polymorphic);
                     capturing_polymorphic = true;
+                    continue;
+                }
+                if f == "-ondelete" {
+                    // The referential action follows as a separate word token
+                    // (e.g. `-ondelete cascade`).
+                    intents.push(Intent::OnDelete);
+                    capturing_ondelete = true;
+                    continue;
+                }
+                if f == "-onupdate" {
+                    intents.push(Intent::OnUpdate);
+                    capturing_onupdate = true;
                     continue;
                 }
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -457,6 +473,34 @@ fn add_field_from_tokens(
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
+                    continue;
+                }
+                if capturing_ondelete {
+                    capturing_ondelete = false;
+                    on_delete = Some(
+                        FkAction::from_keyword(w.trim()).ok_or_else(|| {
+                            OsdlError::Parse(
+                                ParseError::new(format!(
+                                    "invalid -ondelete action `{w}` (expected cascade|restrict|setnull|setdefault|noaction)"
+                                ))
+                                .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                            )
+                        })?,
+                    );
+                    continue;
+                }
+                if capturing_onupdate {
+                    capturing_onupdate = false;
+                    on_update = Some(
+                        FkAction::from_keyword(w.trim()).ok_or_else(|| {
+                            OsdlError::Parse(
+                                ParseError::new(format!(
+                                    "invalid -onupdate action `{w}` (expected cascade|restrict|setnull|setdefault|noaction)"
+                                ))
+                                .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                            )
+                        })?,
+                    );
                     continue;
                 }
                 if capturing_m2m {
@@ -538,6 +582,8 @@ fn add_field_from_tokens(
         check_expr,
         polymorphic_targets,
         custom_type,
+        on_delete,
+        on_update,
         line: line_no,
     });
     Ok(())
