@@ -4,7 +4,3 @@
 # Editor / OS noise
 .DS_Store
 *.swp
-
-# Transpiler output (osdl build --out)
-/generated
-/src/generated
