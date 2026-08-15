@@ -107,6 +107,9 @@ pub enum Intent {
     Enum,
     /// A database-side default value (`-default <value>`).
     Default,
+    /// Many-to-many relationship (`-m2m <Target>`): the compiler auto-generates
+    /// a junction table linking `Source` and `Target`.
+    M2m,
 }
 
 impl Intent {
@@ -123,6 +126,7 @@ impl Intent {
             Intent::Relation => "-relation",
             Intent::Enum => "-enum",
             Intent::Default => "-default",
+            Intent::M2m => "-m2m",
         }
     }
 }

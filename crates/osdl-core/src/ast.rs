@@ -102,6 +102,8 @@ pub struct Field {
     pub enum_variants: Vec<String>,
     /// Database-side default value (`-default <value>`), e.g. `0`, `""`, `now`.
     pub default_value: Option<String>,
+    /// Target model for a many-to-many relationship (`-m2m <Target>`).
+    pub m2m_target: Option<String>,
     pub line: usize,
 }
 
@@ -148,6 +150,9 @@ pub struct LockField {
     pub enum_variants: Vec<String>,
     /// Database-side default value (`-default <value>`); `None` when absent.
     pub default_value: Option<String>,
+    /// Target model for a many-to-many relationship (`-m2m <Target>`); `None`
+    /// when the field is not an m2m join.
+    pub m2m_target: Option<String>,
 }
 
 impl LockModel {
@@ -170,16 +175,23 @@ impl Ast {
                     .map(|(_, f)| {
                         let mut variants = f.enum_variants.clone();
                         variants.sort();
+                        let mut intents: Vec<String> = f
+                            .intents
+                            .iter()
+                            .map(|i| i.as_keyword().to_string())
+                            .collect();
+                        // Encode the m2m target into the intents so the
+                        // lockfile stays deterministic and diffable.
+                        if let Some(t) = &f.m2m_target {
+                            intents.push(format!("-m2m {t}"));
+                        }
                         LockField {
                             name: f.name.clone(),
                             ty: f.type_keyword(),
-                            intents: f
-                                .intents
-                                .iter()
-                                .map(|i| i.as_keyword().to_string())
-                                .collect(),
+                            intents,
                             enum_variants: variants,
                             default_value: f.default_value.clone(),
+                            m2m_target: f.m2m_target.clone(),
                         }
                     })
                     .collect();
@@ -202,8 +214,94 @@ impl Ast {
             })
             .collect();
         models.sort_by(|a, b| a.name.cmp(&b.name));
+        // Expand `-m2m` relationships into junction tables: the m2m field is
+        // removed from its source model (it is not a real column) and a
+        // `<Source>_<Target>` junction model is appended.
+        expand_m2m_junctions(&mut models);
         models
     }
+}
+
+/// Expand many-to-many fields into junction-table [`LockModel`]s.
+///
+/// For every field carrying `-m2m <Target>`:
+/// * the field is removed from its source model (it is not a column), and
+/// * a junction model `{Source}_{Target}` is created with the source and target
+///   primary-key columns (as foreign keys) plus a composite unique constraint.
+fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
+    // (source, target, source_field_name) collected before mutating.
+    let mut junctions: Vec<(String, String)> = Vec::new();
+    for m in models.iter_mut() {
+        let mut i = 0;
+        while i < m.fields.len() {
+            let m2m = m.fields[i]
+                .intents
+                .iter()
+                .find(|i| i.starts_with("-m2m "))
+                .map(|s| s["-m2m ".len()..].to_string());
+            if let Some(target) = m2m {
+                junctions.push((m.name.clone(), target));
+                m.fields.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    for (source, target) in junctions {
+        let source_l = to_snake(&source);
+        let target_l = to_snake(&target);
+        let jname = format!("{source}_{target}");
+        let mut fields = vec![
+            LockField {
+                name: "id".into(),
+                ty: "uuid".into(),
+                intents: vec!["-pk".into()],
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+            },
+            LockField {
+                name: format!("{source_l}_id"),
+                ty: format!("{source}.id"),
+                intents: vec!["-uniq".into()],
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+            },
+            LockField {
+                name: format!("{target_l}_id"),
+                ty: format!("{target}.id"),
+                intents: vec!["-uniq".into()],
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+            },
+        ];
+        fields.sort_by(|a, b| a.name.cmp(&b.name));
+        let indexes = vec![LockIndex {
+            name: format!("uniq_{source_l}_id_{target_l}_id"),
+            fields: vec![format!("{source_l}_id"), format!("{target_l}_id")],
+            unique: true,
+        }];
+        models.push(LockModel {
+            name: jname,
+            fields,
+            indexes,
+        });
+    }
+    models.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// Convert a `ModelName` to `model_name` (snake_case).
+fn to_snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.char_indices() {
+        if i != 0 && c.is_uppercase() {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
 }
 
 /// Helper to construct a [`ModelIdx`] from a raw integer (used by tests).
@@ -232,6 +330,7 @@ mod tests {
             intents: vec![Intent::Pk],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -257,6 +356,7 @@ mod tests {
             intents: vec![],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 1,
         });
         let mut b = Model {
@@ -272,6 +372,7 @@ mod tests {
             intents: vec![Intent::Pk],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 1,
         });
         b.add_field(Field {
@@ -280,6 +381,7 @@ mod tests {
             intents: vec![],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 2,
         });
         ast.add_model(a);

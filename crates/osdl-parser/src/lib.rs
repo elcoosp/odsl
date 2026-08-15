@@ -211,8 +211,10 @@ fn add_field_from_tokens(
     let mut intents: Vec<Intent> = Vec::new();
     let mut enum_variants: Vec<String> = Vec::new();
     let mut default_value: Option<String> = None;
+    let mut m2m_target: Option<String> = None;
     let mut capturing_enum = false;
     let mut capturing_default = false;
+    let mut capturing_m2m = false;
 
     for tok in iter {
         match tok {
@@ -229,6 +231,12 @@ fn add_field_from_tokens(
                     capturing_default = true;
                     continue;
                 }
+                if f == "-m2m" || f == "-many" {
+                    // The target model follows as a separate word/reference token.
+                    intents.push(Intent::M2m);
+                    capturing_m2m = true;
+                    continue;
+                }
                 let intent = parse_intent(f).ok_or_else(|| {
                     OsdlError::Parse(
                         ParseError::new(format!("unknown intent flag `{f}`"))
@@ -241,6 +249,11 @@ fn add_field_from_tokens(
                 model: rm,
                 field: rf,
             } => {
+                if capturing_m2m {
+                    capturing_m2m = false;
+                    m2m_target = Some(rm.clone());
+                    continue;
+                }
                 ty = Some(FieldType::Ref(Reference {
                     model: rm.clone(),
                     field: rf.clone(),
@@ -255,6 +268,11 @@ fn add_field_from_tokens(
                 if capturing_default {
                     capturing_default = false;
                     default_value = Some(w.trim().to_string());
+                    continue;
+                }
+                if capturing_m2m {
+                    capturing_m2m = false;
+                    m2m_target = Some(w.trim().to_string());
                     continue;
                 }
                 if let Some(target) = w.strip_prefix("relation:") {
@@ -296,6 +314,7 @@ fn add_field_from_tokens(
         intents,
         enum_variants,
         default_value,
+        m2m_target,
         line: line_no,
     });
     Ok(())
@@ -314,6 +333,7 @@ fn parse_intent(flag: &str) -> Option<Intent> {
         "-relation" => Some(Intent::Relation),
         "-enum" => Some(Intent::Enum),
         "-default" => Some(Intent::Default),
+        "-m2m" | "-many" => Some(Intent::M2m),
         _ => None,
     }
 }
@@ -448,6 +468,17 @@ mod enum_tests {
             idx.fields,
             vec!["tenant_id".to_string(), "created_at".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_many_to_many() {
+        let src = "User\n  id uuid -pk\n  posts -m2m Post\nPost\n  id uuid -pk\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let f = m.fields().find(|(_, fl)| fl.name == "posts").unwrap().1;
+        assert!(f.has(Intent::M2m));
+        assert_eq!(f.m2m_target.as_deref(), Some("Post"));
     }
 
     #[test]

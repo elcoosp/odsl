@@ -81,6 +81,7 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         intents: intents.iter().map(|s| s.to_string()).collect(),
         enum_variants: vec![],
         default_value: None,
+        m2m_target: None,
     }
 }
 
@@ -92,6 +93,7 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         intents: intents.iter().map(|s| s.to_string()).collect(),
         enum_variants: variants.iter().map(|s| s.to_string()).collect(),
         default_value: None,
+        m2m_target: None,
     }
 }
 
@@ -117,6 +119,7 @@ mod tests {
             intents: vec![Intent::Pk],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 1,
         });
         user.add_field(Field {
@@ -125,6 +128,7 @@ mod tests {
             intents: vec![Intent::Uniq],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 2,
         });
         ast.add_model(user);
@@ -171,6 +175,7 @@ mod tests {
             intents: vec![Intent::Enum],
             enum_variants: vec!["active".into(), "inactive".into()],
             default_value: None,
+            m2m_target: None,
             line: 2,
         });
         ast.add_model(user);
@@ -199,6 +204,7 @@ mod tests {
             intents: vec![Intent::Pk],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 2,
         });
         user.add_field(Field {
@@ -207,6 +213,7 @@ mod tests {
             intents: vec![],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 3,
         });
         user.add_field(Field {
@@ -215,6 +222,7 @@ mod tests {
             intents: vec![],
             enum_variants: vec![],
             default_value: None,
+            m2m_target: None,
             line: 4,
         });
         user.indexes.push(ModelIndex {
@@ -234,5 +242,66 @@ mod tests {
             vec!["tenant_id".to_string(), "email".to_string()]
         );
         assert!(got.unique);
+    }
+
+    #[test]
+    fn m2m_expands_to_junction_table() {
+        use crate::ast::{Ast, Field, Model};
+        use crate::types::{Intent, ScalarType};
+        let mut ast = Ast::new();
+        let mut user = Model {
+            name: "User".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+        };
+        user.add_field(Field {
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 1,
+        });
+        user.add_field(Field {
+            name: "posts".into(),
+            ty: FieldType::InferredRef("posts".into()),
+            intents: vec![Intent::M2m],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: Some("Post".into()),
+            line: 2,
+        });
+        let mut post = Model {
+            name: "Post".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 3,
+            indexes: vec![],
+        };
+        post.add_field(Field {
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 4,
+        });
+        ast.add_model(user);
+        ast.add_model(post);
+        let lf = Lockfile::from_ast(&ast);
+        // The junction table exists and the m2m field is gone from User.
+        let user_lm = lf.model_by_name("User").unwrap();
+        assert!(user_lm.field_by_name("posts").is_none());
+        let j = lf
+            .model_by_name("User_Post")
+            .expect("junction table missing");
+        assert!(j.field_by_name("user_id").is_some());
+        assert!(j.field_by_name("post_id").is_some());
+        assert!(j.indexes.iter().any(|i| i.unique
+            && i.fields == vec!["user_id".to_string(), "post_id".to_string()]));
     }
 }
