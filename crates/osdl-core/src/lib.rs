@@ -11,6 +11,7 @@ pub mod ast;
 pub mod errors;
 pub mod formatter;
 pub mod intent_compat;
+pub mod lint;
 pub mod lockfile;
 pub mod naming;
 pub mod types;

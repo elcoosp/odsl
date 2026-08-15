@@ -7,6 +7,7 @@
 //!   * `migrate plan [--apply]` — print the plan, optionally update the lockfile.
 //!   * `migrate create` — write migration files (`migrations/*.sql` or SeaORM).
 //!   * `migrate up --db-url …` — apply the plan to a live database.
+//! * `lint`   — enforce the configurable schema-quality rule set.
 
 #![allow(clippy::result_large_err)]
 
@@ -102,6 +103,18 @@ enum Command {
         /// Target backend used for validation during formatting.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
+    },
+    /// Lint the schema against the built-in (configurable) rule set.
+    Lint {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Path to a `.osdl-lint.toml` config (defaults to one next to `input`).
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
+        /// Exit non-zero on warnings as well as errors.
+        #[arg(long)]
+        deny_warnings: bool,
     },
 }
 
@@ -235,6 +248,11 @@ fn main() -> Result<(), OsdlError> {
             } => cmd_migrate_status(&input, target, db_url),
         },
         Command::Fmt { file, target } => cmd_fmt(file.as_deref(), target),
+        Command::Lint {
+            input,
+            config,
+            deny_warnings,
+        } => cmd_lint(&input, config.as_deref(), deny_warnings),
         Command::Lsp => {
             osdl_lsp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
         }
@@ -786,6 +804,62 @@ fn cmd_fmt(file: Option<&std::path::Path>, target: Target) -> Result<(), OsdlErr
     }
     Ok(())
 }
+
+/// Run the lint engine over the schema and print findings.
+///
+/// Returns `Ok(())` when no error-severity findings are produced (warnings are
+/// reported but do not fail the command unless `--deny-warnings` is set).
+fn cmd_lint(
+    input: &std::path::Path,
+    config: Option<&std::path::Path>,
+    deny_warnings: bool,
+) -> Result<(), OsdlError> {
+    let src = std::fs::read_to_string(input)
+        .map_err(|e| io_err(format!("reading {}: {e}", input.display())))?;
+    let ast = osdl_parser::parse(&src)?;
+    osdl_core::Validator::validate(&ast, None)?;
+
+    // Resolve the config file: explicit --config, else <input-dir>/.osdl-lint.toml.
+    let cfg_path = match config {
+        Some(p) => p.to_path_buf(),
+        None => input.with_file_name(".osdl-lint.toml"),
+    };
+    let config = osdl_core::lint::LintConfig::from_file(&cfg_path);
+    let linter = osdl_core::lint::Linter::new(config);
+    let findings = linter.lint(&ast);
+
+    if findings.is_empty() {
+        println!("✓ {} lints clean", input.display());
+        return Ok(());
+    }
+
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    for f in &findings {
+        match f.severity {
+            osdl_core::lint::Severity::Error => errors += 1,
+            osdl_core::lint::Severity::Warn => warnings += 1,
+            osdl_core::lint::Severity::Info => {}
+            osdl_core::lint::Severity::Off => unreachable!(),
+        }
+        println!("{}", f.render());
+    }
+
+    println!(
+        "\n{} finding(s): {} error(s), {} warning(s)",
+        findings.len(),
+        errors,
+        warnings
+    );
+
+    if errors > 0 || (deny_warnings && warnings > 0) {
+        return Err(io_err(format!(
+            "lint failed: {errors} error(s), {warnings} warning(s)"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,5 +898,87 @@ mod tests {
         );
         assert!(!event_triggers_rebuild(&created, "schema.osdl"));
         assert!(!event_triggers_rebuild(&accessed, "schema.osdl"));
+    }
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LINT_TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Unique temp dir per test invocation (avoids cross-test leakage of
+    /// `.osdl-lint.toml` when tests share a process id).
+    fn lint_test_dir(tag: &str) -> std::path::PathBuf {
+        let n = LINT_TEST_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "osdl-lint-test-{}-{}-{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn lint_clean_schema_passes() {
+        let dir = lint_test_dir("clean");
+        let schema = dir.join("schema.osdl");
+        std::fs::write(
+            &schema,
+            "/// A user.
+User
+  id uuid -pk
+  user_id uuid -index
+  email string -uniq
+  created_at datetime -tz
+  updated_at datetime -tz
+",
+        )
+        .unwrap();
+        // No .osdl-lint.toml -> defaults; this schema satisfies them.
+        cmd_lint(&schema, None, false).expect("clean schema should lint clean");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lint_reports_and_fails_on_bad_schema() {
+        let dir = lint_test_dir("bad");
+        let schema = dir.join("schema.osdl");
+        std::fs::write(
+            &schema,
+            "user_profile
+  id uuid -pk
+  user_id uuid
+",
+        )
+        .unwrap();
+        // Defaults: model-naming (warn) + missing-timestamps (error) fire.
+        let err = cmd_lint(&schema, None, false).unwrap_err();
+        assert!(
+            format!("{err}").contains("error"),
+            "expected an error-severity finding to fail lint"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lint_config_can_disable_rules() {
+        let dir = lint_test_dir("cfg");
+        let schema = dir.join("schema.osdl");
+        std::fs::write(
+            &schema,
+            "user_profile
+  id uuid -pk
+  user_id uuid
+",
+        )
+        .unwrap();
+        // Disable the two rules that would otherwise fire (timestamps=error, model-naming=warn).
+        let cfg = dir.join(".osdl-lint.toml");
+        std::fs::write(
+            &cfg,
+            "[rules]\nmissing-timestamps = \"off\"\nmodel-naming = \"off\"\n",
+        )
+        .unwrap();
+        cmd_lint(&schema, Some(&cfg), false).expect("disabled rules => clean");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
