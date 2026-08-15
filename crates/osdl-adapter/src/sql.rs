@@ -28,6 +28,15 @@ impl SqlDialect {
             None
         }
     }
+
+    /// Map to SeaORM's `DbBackend` for raw-statement construction.
+    pub fn to_db_backend(self) -> sea_orm::DbBackend {
+        match self {
+            SqlDialect::Sqlite => sea_orm::DbBackend::Sqlite,
+            SqlDialect::Postgres => sea_orm::DbBackend::Postgres,
+            SqlDialect::Mysql => sea_orm::DbBackend::MySql,
+        }
+    }
 }
 
 /// Map an OSDL scalar keyword to a column type for the dialect.

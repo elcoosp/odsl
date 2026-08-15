@@ -100,6 +100,76 @@ impl Ast {
             .map(|s| s.as_str())
     }
 
+    /// Tolerant structural comparison used by `osdl migrate test` to assert a
+    /// live database matches a target schema.
+    ///
+    /// Two schemas "match" when every model in `expected` exists in `actual`
+    /// with the same set of fields, and each field agrees on its primary-key,
+    /// unique, and nullable flags. **Type strings are intentionally ignored**
+    /// because database round-trips normalize them (e.g. OSDL `int` is stored
+    /// as `INTEGER` and introspected back as `int` only after a best-effort
+    /// map; `uuid` becomes a `TEXT`/`UUID` column). Documenting directives
+    /// (`///`, `-deprecated`) are also ignored — they are not physical schema.
+    ///
+    /// Returns `Ok(())` when the schemas match, or an `Err` describing the
+    /// first mismatch. `actual` may legitimately contain extra models/fields
+    /// (e.g. an `_osdl_migrations` tracker); only `expected`'s requirements are
+    /// checked, so callers should diff against the *target* as `expected`.
+    pub fn schema_matches(&self, actual: &Ast) -> Result<(), String> {
+        // Build a name->model lookup for the actual schema.
+        let actual_models: std::collections::HashMap<String, &Model> =
+            actual.models().map(|(_, m)| (m.name.clone(), m)).collect();
+
+        for (_, expected_model) in self.models() {
+            let actual_model = actual_models.get(&expected_model.name).ok_or_else(|| {
+                format!("missing model `{}` in live database", expected_model.name)
+            })?;
+
+            // Field lookup for the actual model.
+            let actual_fields: std::collections::HashMap<String, &Field> = actual_model
+                .fields()
+                .map(|(_, f)| (f.name.clone(), f))
+                .collect();
+
+            for (_, ef) in expected_model.fields() {
+                let af = actual_fields.get(&ef.name).ok_or_else(|| {
+                    format!(
+                        "missing field `{}.{}` in live database",
+                        expected_model.name, ef.name
+                    )
+                })?;
+
+                let e_pk = ef.has(crate::types::Intent::Pk);
+                let a_pk = af.has(crate::types::Intent::Pk);
+                if e_pk != a_pk {
+                    return Err(format!(
+                        "field `{}.{}` primary-key mismatch (expected {}, got {})",
+                        expected_model.name, ef.name, e_pk, a_pk
+                    ));
+                }
+
+                let e_uniq = ef.has(crate::types::Intent::Uniq);
+                let a_uniq = af.has(crate::types::Intent::Uniq);
+                if e_uniq != a_uniq {
+                    return Err(format!(
+                        "field `{}.{}` unique mismatch (expected {}, got {})",
+                        expected_model.name, ef.name, e_uniq, a_uniq
+                    ));
+                }
+
+                let e_null = ef.has(crate::types::Intent::Null);
+                let a_null = af.has(crate::types::Intent::Null);
+                if e_null != a_null {
+                    return Err(format!(
+                        "field `{}.{}` nullability mismatch (expected {}, got {})",
+                        expected_model.name, ef.name, e_null, a_null
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Number of fields across all models (used by benchmarks).
     pub fn field_count(&self) -> usize {
         self.models.iter().map(|(_, m)| m.fields.len()).sum()
@@ -512,5 +582,99 @@ mod tests {
         assert_eq!(lock[0].name, "Apple");
         assert_eq!(lock[1].name, "Zebra");
         assert_eq!(lock[0].fields[0].name, "id"); // sorted: id before z
+    }
+
+    /// Build a model with a single pk `id` plus the given extra fields.
+    fn model_with(name: &str, fields: Vec<(&str, ScalarType, Vec<Intent>)>) -> Model {
+        let mut m = Model {
+            name: name.into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+        };
+        m.add_field(Field {
+            custom_type: None,
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            check_expr: None,
+            polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
+            line: 1,
+        });
+        let mut line = 2;
+        for (fname, ty, intents) in fields {
+            m.add_field(Field {
+                custom_type: None,
+                name: fname.into(),
+                ty: FieldType::Scalar(ty),
+                intents,
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+                check_expr: None,
+                polymorphic_targets: vec![],
+                on_delete: None,
+                on_update: None,
+                line,
+            });
+            line += 1;
+        }
+        m
+    }
+
+    #[test]
+    fn schema_matches_ignores_type_strings() {
+        // `expected` uses `int`, `actual` uses `bigint` — types differ but
+        // names / pk / uniq / nullability agree, so they "match".
+        let mut expected = Ast::new();
+        expected.add_model(model_with(
+            "User",
+            vec![
+                ("age", ScalarType::Int, vec![]),
+                ("email", ScalarType::String, vec![Intent::Uniq]),
+            ],
+        ));
+
+        let mut actual = Ast::new();
+        actual.add_model(model_with(
+            "User",
+            vec![
+                ("age", ScalarType::BigInt, vec![]),
+                ("email", ScalarType::String, vec![Intent::Uniq]),
+            ],
+        ));
+        assert!(expected.schema_matches(&actual).is_ok());
+    }
+
+    #[test]
+    fn schema_matches_detects_nullability_mismatch() {
+        let mut expected = Ast::new();
+        expected.add_model(model_with(
+            "User",
+            vec![("age", ScalarType::Int, vec![Intent::Null])],
+        ));
+        let mut actual = Ast::new();
+        // actual has age as NOT null -> mismatch
+        actual.add_model(model_with("User", vec![("age", ScalarType::Int, vec![])]));
+        assert!(expected.schema_matches(&actual).is_err());
+    }
+
+    #[test]
+    fn schema_matches_detects_missing_field() {
+        let mut expected = Ast::new();
+        expected.add_model(model_with(
+            "User",
+            vec![("email", ScalarType::String, vec![])],
+        ));
+        let mut actual = Ast::new();
+        // actual User has only id, missing `email`
+        actual.add_model(model_with("User", vec![]));
+        assert!(expected.schema_matches(&actual).is_err());
     }
 }
