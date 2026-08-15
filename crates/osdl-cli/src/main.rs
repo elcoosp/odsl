@@ -74,6 +74,18 @@ enum Command {
     /// published on open/change using the same parse+validate pipeline as
     /// `osdl build`.
     Lsp,
+    /// Reverse-engineer a live database into an OSDL schema.
+    ///
+    /// Connects to `--db-url` (sqlite://, postgres://, mysql://), reads the
+    /// catalog and writes the inferred schema to `schema.osdl` (or `--out`).
+    Pull {
+        /// Database connection URL (`sqlite://`, `postgres://`, `mysql://`).
+        #[arg(long)]
+        db_url: String,
+        /// Output `.osdl` file (defaults to `schema.osdl`).
+        #[arg(default_value = "schema.osdl")]
+        out: std::path::PathBuf,
+    },
 }
 
 /// Sub-actions of `osdl migrate`.
@@ -139,7 +151,7 @@ fn main() -> Result<(), OsdlError> {
             if watch {
                 cmd_build_watch(&input, target, &out)
             } else {
-                cmd_build(&input, target, &out)
+                run_build(&input, target, &out)
             }
         }
         Command::Migrate { action } => match action {
@@ -164,6 +176,7 @@ fn main() -> Result<(), OsdlError> {
         Command::Lsp => {
             osdl_lsp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
         }
+        Command::Pull { db_url, out } => cmd_pull(&db_url, &out),
     }
 }
 
@@ -210,12 +223,17 @@ fn cmd_init(path: &std::path::Path) -> Result<(), OsdlError> {
     Ok(())
 }
 
-fn cmd_build(
-    input: &std::path::Path,
-    target: Target,
-    out: &std::path::Path,
-) -> Result<(), OsdlError> {
-    run_build(input, target, out)?;
+/// Reverse-engineer a live database (via `--db-url`) into an OSDL schema file.
+fn cmd_pull(db_url: &str, out: &std::path::Path) -> Result<(), OsdlError> {
+    use osdl_adapter::introspect::introspect_to_osdl;
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))?;
+    let osdl = rt
+        .block_on(introspect_to_osdl(db_url))
+        .map_err(|e| OsdlError::Io(std::io::Error::other(e)))?;
+    std::fs::write(out, &osdl)
+        .map_err(|e| OsdlError::Io(std::io::Error::other(format!("writing {}: {e}", out.display()))))?;
+    println!("wrote {}", out.display());
     Ok(())
 }
 
