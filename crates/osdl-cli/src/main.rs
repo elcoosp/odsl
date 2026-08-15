@@ -151,10 +151,9 @@ enum MigrateAction {
         #[arg(long)]
         force: bool,
     },
-    /// Print the rollback (down) DDL for the current schema diff.
-    ///
-    /// Computes the inverse of `migrate up`: reverting the deployed schema
-    /// (osdl.lock) back to the schema in `schema.osdl`. Prints the down SQL.
+    /// Roll back the deployed schema (`osdl.lock`) to the desired state
+    /// (`schema.osdl`). Computes the inverse of `migrate up` and either prints
+    /// the rollback DDL or, with `--db-url`, applies it to the live database.
     Down {
         /// Input `.osdl` file.
         #[arg(default_value = "schema.osdl")]
@@ -162,6 +161,15 @@ enum MigrateAction {
         /// Target backend (selects the DDL dialect).
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
+        /// Live database connection URL (`sqlite://`, `postgres://`,
+        /// `mongodb://`). When provided, the rollback is applied (not just
+        /// printed).
+        #[arg(long)]
+        db_url: Option<String>,
+        /// Skip the interactive confirmation for destructive changes
+        /// (dropping models/fields, altering columns). Use with care.
+        #[arg(long)]
+        force: bool,
     },
     /// Show a visual diff between the deployed schema (`osdl.lock`), the live
     /// database (`--db-url`), and the desired schema (`schema.osdl`).
@@ -214,7 +222,9 @@ fn main() -> Result<(), OsdlError> {
                 db_url,
                 force,
             } => cmd_migrate_up(&input, target, db_url, force),
-            MigrateAction::Down { input, target } => cmd_migrate_down(&input, target),
+            MigrateAction::Down { input, target, db_url, force } => {
+                cmd_migrate_down(&input, target, db_url, force)
+            }
             MigrateAction::Status {
                 input,
                 target,
@@ -577,10 +587,16 @@ fn cmd_migrate_create(
     }
 }
 
-/// Rollback plan: revert the *deployed* schema (osdl.lock) back to the *desired*
-/// schema (schema.osdl). The inverse plan is `diff(target, current)` and its
-/// rendered down SQL is printed.
-fn cmd_migrate_down(input: &std::path::Path, target: Target) -> Result<(), OsdlError> {
+/// Rollback plan: revert the *deployed* schema (osdl.lock) back to the
+/// *desired* schema (schema.osdl). The inverse plan is `diff(target, current)`
+/// rendered as the down SQL / Mongo commands. With `--db-url` the rollback is
+/// applied to the live database; otherwise it is printed for inspection.
+fn cmd_migrate_down(
+    input: &std::path::Path,
+    target: Target,
+    db_url: Option<String>,
+    force: bool,
+) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
@@ -591,20 +607,80 @@ fn cmd_migrate_down(input: &std::path::Path, target: Target) -> Result<(), OsdlE
     let target_lock = Lockfile::from_ast(&ast);
     // Inverse plan: from the desired schema back to the deployed one.
     let plan = MigrationPlan::diff(&target_lock, &current);
+
+    if plan.ops.is_empty() {
+        println!("no down migration (nothing to revert)");
+        return Ok(());
+    }
+
+    // Show what the rollback will do.
+    println!("=== rollback (desired -> deployed) ===");
+    for line in plan.describe() {
+        println!("  - {line}");
+    }
+
+    // Guard destructive operations (drop model/field, alter column) unless
+    // --force or interactive confirmation.
+    if plan.is_destructive() && !force {
+        if std::io::stdin().is_terminal() {
+            let count = plan.destructive_ops().len();
+            println!(
+                "\nThis rollback contains {count} potentially destructive operation(s) \
+                 that may DESTROY DATA (drop model/field, alter column):"
+            );
+            for op in plan.destructive_ops() {
+                println!("  - {}", describe_op(op));
+            }
+            print!("Type 'yes' to proceed, anything else to abort: ");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            if std::io::stdin().read_line(&mut answer).is_err() || answer.trim() != "yes" {
+                println!("aborted; no changes applied");
+                return Ok(());
+            }
+        } else {
+            return Err(io_err(
+                "refusing destructive rollback in non-interactive mode; \
+                 re-run with --force to apply, or pipe 'yes' to confirm",
+            ));
+        }
+    }
+
     let dialect = match target {
         Target::SeaOrmPostgres => SqlDialect::Postgres,
         Target::SeaOrmMysql => SqlDialect::Mysql,
         _ => SqlDialect::Sqlite,
     };
-    let down = osdl_adapter::migrate::render_down_sql(dialect, &plan, &target_lock, Some(&current));
-    if down.is_empty() {
-        println!("no down migration (nothing to revert)");
-    } else {
-        println!("-- down (revert to schema.osdl state)");
+
+    // No live DB: print the rollback DDL only.
+    let Some(url) = &db_url else {
+        let down =
+            osdl_adapter::migrate::render_down_sql(dialect, &plan, &target_lock, Some(&current));
+        println!("\n-- down (revert to deployed state)");
         for stmt in &down {
             println!("{stmt};");
         }
+        return Ok(());
+    };
+
+    // Live DB: apply the rollback via the adapter's `revert`.
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
+    let applied = runtime
+        .block_on(async {
+            let adapter = osdl_adapter::connect(url)
+                .await
+                .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
+            adapter
+                .revert(&plan, &target_lock, Some(&current))
+                .await
+                .map_err(|e| io_err(format!("applying rollback: {e}")))
+        })?;
+    for stmt in &applied {
+        println!("  reverted: {stmt}");
     }
+    println!("reverted {} change(s) on {url}", applied.len());
     Ok(())
 }
 
