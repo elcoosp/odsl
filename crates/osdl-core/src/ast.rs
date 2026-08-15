@@ -86,6 +86,8 @@ pub struct Field {
     pub intents: Vec<Intent>,
     /// Closed value set when the field is a native enum (`-enum a,b`).
     pub enum_variants: Vec<String>,
+    /// Database-side default value (`-default <value>`), e.g. `0`, `""`, `now`.
+    pub default_value: Option<String>,
     pub line: usize,
 }
 
@@ -121,6 +123,8 @@ pub struct LockField {
     pub intents: Vec<String>,
     /// Closed value set for native enums (`-enum a,b`); empty otherwise.
     pub enum_variants: Vec<String>,
+    /// Database-side default value (`-default <value>`); `None` when absent.
+    pub default_value: Option<String>,
 }
 
 impl LockModel {
@@ -152,6 +156,7 @@ impl Ast {
                                 .map(|i| i.as_keyword().to_string())
                                 .collect(),
                             enum_variants: variants,
+                            default_value: f.default_value.clone(),
                         }
                     })
                     .collect();
@@ -191,6 +196,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
             enum_variants: vec![],
+            default_value: None,
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -214,6 +220,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
             enum_variants: vec![],
+            default_value: None,
             line: 1,
         });
         let mut b = Model {
@@ -227,6 +234,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::Int),
             intents: vec![Intent::Pk],
             enum_variants: vec![],
+            default_value: None,
             line: 1,
         });
         b.add_field(Field {
@@ -234,6 +242,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
             enum_variants: vec![],
+            default_value: None,
             line: 2,
         });
         ast.add_model(a);

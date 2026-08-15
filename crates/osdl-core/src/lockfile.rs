@@ -80,6 +80,7 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         ty: ty.to_string(),
         intents: intents.iter().map(|s| s.to_string()).collect(),
         enum_variants: vec![],
+        default_value: None,
     }
 }
 
@@ -90,6 +91,7 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         ty: ty.to_string(),
         intents: intents.iter().map(|s| s.to_string()).collect(),
         enum_variants: variants.iter().map(|s| s.to_string()).collect(),
+        default_value: None,
     }
 }
 
@@ -113,6 +115,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
             enum_variants: vec![],
+            default_value: None,
             line: 1,
         });
         user.add_field(Field {
@@ -120,6 +123,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Uniq],
             enum_variants: vec![],
+            default_value: None,
             line: 2,
         });
         ast.add_model(user);
@@ -164,6 +168,7 @@ mod tests {
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Enum],
             enum_variants: vec!["active".into(), "inactive".into()],
+            default_value: None,
             line: 2,
         });
         ast.add_model(user);

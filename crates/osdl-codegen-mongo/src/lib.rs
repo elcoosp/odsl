@@ -148,6 +148,10 @@ fn render_json_schema(model: &Model) -> String {
         if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
             prop["enum"] = serde_json::json!(field.enum_variants);
         }
+        if let Some(value) = &field.default_value {
+            // `now` is documented as a server-side default; record it as a hint.
+            prop["default"] = serde_json::json!(value);
+        }
         props.insert(field.name.clone(), prop);
     }
     // Required = non-nullable fields.
@@ -261,6 +265,21 @@ mod tests {
         assert!(user_rs.contains("pub email: String"));
         assert!(user_rs.contains("pub age: Option<i32>"));
         assert!(user_rs.contains("pub id: Option<ObjectId>"));
+    }
+
+    #[test]
+    fn renders_default_value_in_schema() {
+        let ast = compile("User\n  id uuid -pk\n  age int -default 0\n");
+        let renderer = MongoRenderer::new(Target::Mongo);
+        let files = renderer.render(&ast).unwrap();
+        let schema = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.json")
+            .unwrap()
+            .1
+            .clone();
+        let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        assert_eq!(v["$jsonSchema"]["properties"]["age"]["default"], "0");
     }
 
     #[test]

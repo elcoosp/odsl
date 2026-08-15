@@ -134,17 +134,39 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
         let enum_ident =
             syn::Ident::new(&to_pascal_case(&field.name), proc_macro2::Span::call_site());
         let col_ty = enum_ident.clone();
+        let default_attr = default_attr(field);
         return quote! {
             #(#attrs)*
             #[sea_orm(active_enum = #enum_ident)]
+            #default_attr
             pub #name: #col_ty,
         };
     }
 
+    let default_attr = default_attr(field);
     quote! {
         #(#attrs)*
+        #default_attr
         pub #name: #ty,
     }
+}
+
+/// Build the SeaORM `default_value` attribute for a field, if any.
+/// `now` on temporal columns maps to the portable `CURRENT_TIMESTAMP`.
+fn default_attr(field: &Field) -> TokenStream {
+    let Some(value) = &field.default_value else {
+        return quote! {};
+    };
+    let db_value = if value == "now"
+        && matches!(
+            field.ty,
+            FieldType::Scalar(ScalarType::DateTime) | FieldType::Scalar(ScalarType::Date)
+        ) {
+        "CURRENT_TIMESTAMP".to_string()
+    } else {
+        value.clone()
+    };
+    quote! { #[sea_orm(default_value = #db_value)] }
 }
 
 /// Rust type for a foreign-key scalar column; falls back to `Uuid` (the common
@@ -397,5 +419,27 @@ mod tests {
         assert!(user_rs.contains("Active"));
         assert!(user_rs.contains("Inactive"));
         assert!(user_rs.contains("Pending"));
+    }
+
+    #[test]
+    fn renders_default_value_attr() {
+        let ast =
+            compile("User\n  id uuid -pk\n  age int -default 0\n  created datetime -default now\n");
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            user_rs.contains("default_value = \"0\""),
+            "int default missing:\n{user_rs}"
+        );
+        assert!(
+            user_rs.contains("default_value = \"CURRENT_TIMESTAMP\""),
+            "now default should map to CURRENT_TIMESTAMP:\n{user_rs}"
+        );
     }
 }

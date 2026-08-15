@@ -30,8 +30,14 @@ pub use grammar::Rule;
 enum RawToken {
     Name(String),
     Flag(String),
-    Reference { model: String, field: String },
+    Reference {
+        model: String,
+        field: String,
+    },
     Word(String),
+    /// A quoted string literal (`"..."`); the inner content (quotes stripped)
+    /// is stored verbatim, e.g. `-default ""` yields `Quoted("")`.
+    Quoted(String),
 }
 
 struct ParsedLine {
@@ -160,7 +166,9 @@ fn add_field_from_tokens(
     let mut ty: Option<FieldType> = None;
     let mut intents: Vec<Intent> = Vec::new();
     let mut enum_variants: Vec<String> = Vec::new();
+    let mut default_value: Option<String> = None;
     let mut capturing_enum = false;
+    let mut capturing_default = false;
 
     for tok in iter {
         match tok {
@@ -169,6 +177,12 @@ fn add_field_from_tokens(
                     // The variants follow as a separate word token (e.g. `a,b`).
                     intents.push(Intent::Enum);
                     capturing_enum = true;
+                    continue;
+                }
+                if f == "-default" {
+                    // The value follows as a separate word token (e.g. `0`, `now`, `""`).
+                    intents.push(Intent::Default);
+                    capturing_default = true;
                     continue;
                 }
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -194,6 +208,11 @@ fn add_field_from_tokens(
                     enum_variants = w.split(',').map(|s| s.trim().to_string()).collect();
                     continue;
                 }
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(w.trim().to_string());
+                    continue;
+                }
                 if let Some(target) = w.strip_prefix("relation:") {
                     intents.push(Intent::Relation);
                     ty = Some(FieldType::InferredRef(format!("relation:{target}")));
@@ -207,6 +226,16 @@ fn add_field_from_tokens(
                 } else {
                     ty = Some(FieldType::InferredRef(w.clone()));
                 }
+            }
+            RawToken::Quoted(q) => {
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(q.clone());
+                    continue;
+                }
+                // A bare quoted string as a type/ref token is unsupported;
+                // treat it as an inferred reference name (best-effort).
+                ty = Some(FieldType::InferredRef(q.clone()));
             }
             RawToken::Name(_) => unreachable!("name only appears as first token"),
         }
@@ -222,6 +251,7 @@ fn add_field_from_tokens(
         ty,
         intents,
         enum_variants,
+        default_value,
         line: line_no,
     });
     Ok(())
@@ -239,6 +269,7 @@ fn parse_intent(flag: &str) -> Option<Intent> {
         "-auto" | "-autoincrement" => Some(Intent::Auto),
         "-relation" => Some(Intent::Relation),
         "-enum" => Some(Intent::Enum),
+        "-default" => Some(Intent::Default),
         _ => None,
     }
 }
@@ -292,6 +323,12 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                                     let (m, f) = split_reference(t.as_str());
                                     tokens.push(RawToken::Reference { model: m, field: f });
                                 }
+                                Rule::quoted => {
+                                    let s = t.as_str();
+                                    // Strip the surrounding double quotes.
+                                    let inner = if s.len() >= 2 { &s[1..s.len() - 1] } else { "" };
+                                    tokens.push(RawToken::Quoted(inner.to_string()));
+                                }
                                 Rule::word => tokens.push(RawToken::Word(t.as_str().to_string())),
                                 _ => {}
                             }
@@ -334,6 +371,21 @@ fn span_at(_src: &str, start: usize, end: usize, line: usize) -> Span {
 mod enum_tests {
     use super::*;
     use osdl_core::types::Intent;
+
+    #[test]
+    fn parses_default_value() {
+        let src = "User\n  id uuid -pk\n  age int -default 0\n  created datetime -default now\n  bio string -default \"\"\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let age = m.fields().find(|(_, fl)| fl.name == "age").unwrap().1;
+        assert!(age.has(Intent::Default));
+        assert_eq!(age.default_value.as_deref(), Some("0"));
+        let created = m.fields().find(|(_, fl)| fl.name == "created").unwrap().1;
+        assert_eq!(created.default_value.as_deref(), Some("now"));
+        let bio = m.fields().find(|(_, fl)| fl.name == "bio").unwrap().1;
+        assert_eq!(bio.default_value.as_deref(), Some(""));
+    }
 
     #[test]
     fn parses_enum_variants() {

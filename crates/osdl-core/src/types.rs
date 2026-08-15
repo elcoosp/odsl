@@ -105,6 +105,8 @@ pub enum Intent {
     Relation,
     /// Closed set of string values (native enum).
     Enum,
+    /// A database-side default value (`-default <value>`).
+    Default,
 }
 
 impl Intent {
@@ -120,6 +122,7 @@ impl Intent {
             Intent::Auto => "-auto",
             Intent::Relation => "-relation",
             Intent::Enum => "-enum",
+            Intent::Default => "-default",
         }
     }
 }
