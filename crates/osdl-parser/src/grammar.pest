@@ -11,6 +11,7 @@
 //!   posts -relation Post          # a relation to another model
 //!   author User.id                # an explicit foreign key (Model.field)
 //!   profile_id                    # omitted type -> inferred foreign key
+//!   bio string -default ""        # default value may be a quoted string
 //! ```
 //!
 //! Indentation is the only structural punctuation: a top-level line (indent 0)
@@ -25,19 +26,25 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { name ~ (sp ~ token)* | comment_part | "" }
+body    = { name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
 
 indent  = @{ (" " | "\t")* }
 
 name    = @{ ident_char+ }
-token   = { flag | reference | word }
+token   = { flag | reference | quoted | word }
 sp      = _{ " " }
 
 // Intent flags always begin with '-'.
 flag    = @{ "-" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 // A cross-model reference: Model.field (the '.' is the only operator).
 reference = @{ ident ~ "." ~ ident }
-word    = @{ ident_char+ }
+// A quoted string literal (inner content; the surrounding quotes are stripped).
+// Used for values such as `-default ""` or `-default "pending"`.
+quoted  = @{ "\"" ~ quoted_inner ~ "\"" }
+quoted_inner = @{ (!"\"" ~ (!newline_char ~ ANY))* }
+// `word` carries type names, relation targets, and `-enum` value lists
+// (which may contain commas, e.g. `active,inactive`).
+word    = @{ (ident_char | ",")+ }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident      = @{ ident_char+ }

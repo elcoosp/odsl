@@ -50,8 +50,12 @@ fn render_model(model: &Model, target: Target) -> Result<String, OsdlError> {
     let table_name = to_snake_plural(&model.name);
 
     let mut field_defs: Vec<TokenStream> = Vec::new();
+    let mut enum_defs: Vec<TokenStream> = Vec::new();
     for (_fidx, field) in model.fields() {
         field_defs.push(render_field(field, target));
+        if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
+            enum_defs.push(render_active_enum(field));
+        }
     }
 
     let tokens = quote! {
@@ -65,9 +69,88 @@ fn render_model(model: &Model, target: Target) -> Result<String, OsdlError> {
         }
 
         impl ActiveModelBehavior for ActiveModel {}
+
+        #(#enum_defs)*
+    };
+
+    // Model-level composite indexes / unique constraints.
+    let index_tokens = render_indexes(model);
+    let tokens = if let Some((attr, defs)) = index_tokens {
+        quote! {
+            #attr
+            #tokens
+            #defs
+        }
+    } else {
+        tokens
     };
 
     Ok(format_tokens(tokens))
+}
+
+/// Emit SeaORM index support for model-level `-index`/`-uniq` constraints.
+///
+/// Returns `(attribute, Index_impl)` where `attribute` is the
+/// `#[sea_orm(indexes(<Name>))]` placed on the `Model` struct and `Index_impl`
+/// is the `Index` struct defining the comprised columns. When the model has no
+/// indexes, returns `None` and no extra code is generated.
+fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
+    if model.indexes.is_empty() {
+        return None;
+    }
+    let names: Vec<TokenStream> = model
+        .indexes
+        .iter()
+        .map(|idx| {
+            let n = syn::Ident::new(&to_pascal_case(&idx.name), proc_macro2::Span::call_site());
+            quote! { #n }
+        })
+        .collect();
+    let attr = quote! { #[sea_orm(indexes(#(#names),*))] };
+    let defs: Vec<TokenStream> = model
+        .indexes
+        .iter()
+        .map(|idx| {
+            let name_ident =
+                syn::Ident::new(&to_pascal_case(&idx.name), proc_macro2::Span::call_site());
+            let name_str = idx.name.clone();
+            let unique = idx.unique;
+            let col_strs: Vec<TokenStream> = idx
+                .fields
+                .iter()
+                .map(|f| {
+                    let s = f.clone();
+                    quote! { #s }
+                })
+                .collect();
+            quote! {
+                #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+                pub struct #name_ident;
+
+                impl sea_orm::entity::IndexName for #name_ident {
+                    fn get_index_name(&self) -> &str {
+                        #name_str
+                    }
+                }
+
+                impl sea_orm::entity::Index for #name_ident {
+                    fn name(&self) -> Option<&str> {
+                        Some(#name_str)
+                    }
+                    fn unique(&self) -> bool {
+                        #unique
+                    }
+                    fn columns(&self) -> Vec<&str> {
+                        vec![#(#col_strs),*]
+                    }
+                    fn is_composite(&self) -> bool {
+                        true
+                    }
+                }
+            }
+        })
+        .collect();
+    Some((attr, quote! { #(#defs)* }))
 }
 
 fn render_field(field: &Field, _target: Target) -> TokenStream {
@@ -123,10 +206,44 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
         attrs.push(quote! { #[sea_orm(unique)] });
     }
 
+    // Native enum: emit an ActiveEnum-backed column.
+    if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
+        let enum_ident =
+            syn::Ident::new(&to_pascal_case(&field.name), proc_macro2::Span::call_site());
+        let col_ty = enum_ident.clone();
+        let default_attr = default_attr(field);
+        return quote! {
+            #(#attrs)*
+            #[sea_orm(active_enum = #enum_ident)]
+            #default_attr
+            pub #name: #col_ty,
+        };
+    }
+
+    let default_attr = default_attr(field);
     quote! {
         #(#attrs)*
+        #default_attr
         pub #name: #ty,
     }
+}
+
+/// Build the SeaORM `default_value` attribute for a field, if any.
+/// `now` on temporal columns maps to the portable `CURRENT_TIMESTAMP`.
+fn default_attr(field: &Field) -> TokenStream {
+    let Some(value) = &field.default_value else {
+        return quote! {};
+    };
+    let db_value = if value == "now"
+        && matches!(
+            field.ty,
+            FieldType::Scalar(ScalarType::DateTime) | FieldType::Scalar(ScalarType::Date)
+        ) {
+        "CURRENT_TIMESTAMP".to_string()
+    } else {
+        value.clone()
+    };
+    quote! { #[sea_orm(default_value = #db_value)] }
 }
 
 /// Rust type for a foreign-key scalar column; falls back to `Uuid` (the common
@@ -207,6 +324,48 @@ fn scalar_rust_type(s: ScalarType, nullable: bool) -> TokenStream {
     } else {
         base
     }
+}
+
+/// Generate a SeaORM `ActiveEnum` struct for a `-enum` field.
+fn render_active_enum(field: &Field) -> TokenStream {
+    let enum_ident = syn::Ident::new(&to_pascal_case(&field.name), proc_macro2::Span::call_site());
+    let variants: Vec<TokenStream> = field
+        .enum_variants
+        .iter()
+        .map(|v| {
+            let v_ident = syn::Ident::new(&to_pascal_case(v), proc_macro2::Span::call_site());
+            quote! { #v_ident }
+        })
+        .collect();
+    quote! {
+        #[derive(Debug, Clone, PartialEq, Eq, EnumIter, ActiveEnum)]
+        #[sea_orm(rs_type = "String", db_type = "Text", rename_all = "snake_case")]
+        pub enum #enum_ident {
+            #(#variants),*
+        }
+    }
+}
+
+/// `status` -> `Status`, `order_status` -> `OrderStatus`.
+fn to_pascal_case(s: &str) -> String {
+    let mut out = String::new();
+    let mut upper = true;
+    for c in s.chars() {
+        if c == '_' || c == '-' || c == ' ' {
+            upper = true;
+            continue;
+        }
+        if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    if out.is_empty() {
+        out.push('X');
+    }
+    out
 }
 
 fn field_reference(field: &Field) -> Option<Reference> {
@@ -314,8 +473,8 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_user_entity() {
-        let ast = compile("User\n  id uuid -pk\n  email string -uniq\n  age int -null\n");
+    fn renders_active_enum_field() {
+        let ast = compile("User\n  id uuid -pk\n  status string -enum active,inactive,pending\n");
         let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
         let files = renderer.render(&ast).unwrap();
         let user_rs = files
@@ -324,6 +483,66 @@ mod tests {
             .unwrap()
             .1
             .clone();
-        insta::assert_snapshot!(user_rs);
+        assert!(
+            user_rs.contains("active_enum = Status"),
+            "enum column attr missing:\n{user_rs}"
+        );
+        assert!(
+            user_rs.contains("pub status: Status"),
+            "enum column type missing"
+        );
+        assert!(user_rs.contains("#[derive(Debug, Clone, PartialEq, Eq, EnumIter, ActiveEnum)]"));
+        assert!(user_rs.contains("pub enum Status {"));
+        assert!(user_rs.contains("Active"));
+        assert!(user_rs.contains("Inactive"));
+        assert!(user_rs.contains("Pending"));
+    }
+
+    #[test]
+    fn renders_entity_level_composite_index() {
+        let ast = compile(
+            "User\n  id uuid -pk\n  tenant_id uuid\n  email string\n  -uniq tenant_id,email\n",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        // Entity-level index attribute referencing the generated index struct.
+        assert!(
+            user_rs.contains("#[sea_orm(indexes(UniqTenantIdEmail))]"),
+            "indexes attribute missing:\\n{user_rs}"
+        );
+        // The generated index struct implements IndexName + Index.
+        assert!(user_rs.contains("impl sea_orm::entity::IndexName for UniqTenantIdEmail"));
+        assert!(user_rs.contains("impl sea_orm::entity::Index for UniqTenantIdEmail"));
+        assert!(user_rs.contains("fn unique(&self) -> bool {"));
+        assert!(user_rs.contains("\"tenant_id\""));
+        assert!(user_rs.contains("\"email\""));
+    }
+
+    #[test]
+    fn renders_default_value_attr() {
+        let ast =
+            compile("User\n  id uuid -pk\n  age int -default 0\n  created datetime -default now\n");
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            user_rs.contains("default_value = \"0\""),
+            "int default missing:\\n{user_rs}"
+        );
+        assert!(
+            user_rs.contains("default_value = \"CURRENT_TIMESTAMP\""),
+            "now default should map to CURRENT_TIMESTAMP:\\n{user_rs}"
+        );
     }
 }

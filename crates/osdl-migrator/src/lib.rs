@@ -110,6 +110,25 @@ impl MigrationPlan {
             })
             .collect()
     }
+
+    /// Ops that can destroy data: dropping models/fields and altering a
+    /// column's type or constraints. AddField is non-destructive.
+    pub fn destructive_ops(&self) -> Vec<&MigrationOp> {
+        self.ops
+            .iter()
+            .filter(|op| match op {
+                MigrationOp::DropModel { .. }
+                | MigrationOp::DropField { .. }
+                | MigrationOp::AlterField { .. } => true,
+                MigrationOp::CreateModel { .. } | MigrationOp::AddField { .. } => false,
+            })
+            .collect()
+    }
+
+    /// Whether the plan contains any data-destroying operation.
+    pub fn is_destructive(&self) -> bool {
+        !self.destructive_ops().is_empty()
+    }
 }
 
 fn diff_fields(from: &LockModel, to: &LockModel, ops: &mut Vec<MigrationOp>) {
@@ -202,6 +221,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("email", "string", &["-uniq"]),
             ],
+            indexes: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert_eq!(plan.ops.len(), 1);
@@ -221,6 +241,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("age", "int", &[]),
             ],
+            indexes: vec![],
         }]);
         let to = lf(vec![LockModel {
             name: "User".into(),
@@ -228,6 +249,7 @@ mod tests {
                 lock_field("id", "uuid", &["-pk"]),
                 lock_field("age", "bigint", &["-null"]),
             ],
+            indexes: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert_eq!(
@@ -247,6 +269,7 @@ mod tests {
         let from = lf(vec![LockModel {
             name: "Old".into(),
             fields: vec![],
+            indexes: vec![],
         }]);
         let to = lf(vec![]);
         let plan = MigrationPlan::diff(&from, &to);
@@ -256,6 +279,55 @@ mod tests {
                 model: "Old".into()
             }]
         );
+    }
+
+    #[test]
+    fn destructive_detection() {
+        let from = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![
+                lock_field("id", "uuid", &["-pk"]),
+                lock_field("age", "int", &[]),
+                lock_field("nick", "string", &[]),
+            ],
+            indexes: vec![],
+        }]);
+        let to = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![
+                lock_field("id", "uuid", &["-pk"]),
+                lock_field("age", "bigint", &["-null"]),
+            ],
+            indexes: vec![],
+        }]);
+        let plan = MigrationPlan::diff(&from, &to);
+        // drop field nick + alter field age are destructive; add field is not.
+        assert!(plan.is_destructive());
+        assert_eq!(plan.destructive_ops().len(), 2);
+        let kinds: Vec<&str> = plan
+            .destructive_ops()
+            .iter()
+            .map(|op| match op {
+                MigrationOp::DropField { .. } => "drop",
+                MigrationOp::AlterField { .. } => "alter",
+                _ => "other",
+            })
+            .collect();
+        assert!(kinds.contains(&"drop"));
+        assert!(kinds.contains(&"alter"));
+    }
+
+    #[test]
+    fn non_destructive_when_only_adds() {
+        let from = lf(vec![]);
+        let to = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![lock_field("id", "uuid", &["-pk"])],
+            indexes: vec![],
+        }]);
+        let plan = MigrationPlan::diff(&from, &to);
+        assert!(!plan.is_destructive());
+        assert!(plan.destructive_ops().is_empty());
     }
 
     #[test]

@@ -26,6 +26,7 @@ async fn applies_create_and_add_field_to_live_sqlite() {
                 lock_field("email", "string", &["-uniq"]),
                 lock_field("age", "int", &["-null"]),
             ],
+            indexes: vec![],
         }],
     };
 
@@ -37,7 +38,10 @@ async fn applies_create_and_add_field_to_live_sqlite() {
     };
 
     let adapter = connect(&url).await.expect("connect sqlite");
-    let applied = adapter.apply(&plan, &target).await.expect("apply plan");
+    let applied = adapter
+        .apply(&plan, &target, None)
+        .await
+        .expect("apply plan");
     assert_eq!(applied.len(), 1);
     assert!(applied[0].starts_with("CREATE TABLE"));
 
@@ -62,7 +66,7 @@ async fn applies_create_and_add_field_to_live_sqlite() {
         }],
     };
     let _ = adapter
-        .apply(&plan2, &target)
+        .apply(&plan2, &target, None)
         .await
         .expect("apply add field");
     let schema2 = run_sqlite(&db_path, ".schema users");
@@ -88,6 +92,7 @@ async fn applies_reference_as_foreign_key() {
             LockModel {
                 name: "User".into(),
                 fields: vec![lock_field("id", "uuid", &["-pk"])],
+                indexes: vec![],
             },
             LockModel {
                 name: "Post".into(),
@@ -95,6 +100,7 @@ async fn applies_reference_as_foreign_key() {
                     lock_field("id", "uuid", &["-pk"]),
                     lock_field("author", "User.id", &[]),
                 ],
+                indexes: vec![],
             },
         ],
     };
@@ -109,12 +115,52 @@ async fn applies_reference_as_foreign_key() {
         ],
     };
     let adapter = connect(&url).await.expect("connect");
-    adapter.apply(&plan, &target).await.expect("apply");
+    adapter.apply(&plan, &target, None).await.expect("apply");
     let schema = run_sqlite(&db_path, ".schema posts");
     assert!(
         schema.contains("REFERENCES \"users\"(\"id\")"),
         "FK not emitted: {schema}"
     );
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn history_tracker_records_and_detects_applied() {
+    let dir = std::env::temp_dir();
+    let db_path = dir.join(format!("osdl_hist_{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db_path);
+    let url = format!("sqlite:///{}?mode=rwc", db_path.display());
+
+    let adapter = connect(&url).await.expect("connect");
+    adapter
+        .ensure_history_table()
+        .await
+        .expect("ensure history");
+    // Empty initially.
+    assert!(adapter.applied_migrations().await.unwrap().is_empty());
+    // Record two.
+    adapter
+        .record_applied("m20240101_a", "c1")
+        .await
+        .expect("record a");
+    adapter
+        .record_applied("m20240102_b", "c2")
+        .await
+        .expect("record b");
+    // Recorded migrations are visible and idempotent (no error on dup).
+    let applied = adapter.applied_migrations().await.unwrap();
+    assert_eq!(applied.len(), 2);
+    assert!(applied.contains(&"m20240101_a".to_string()));
+    adapter
+        .record_applied("m20240101_a", "c1")
+        .await
+        .expect("re-record a is idempotent");
+    assert_eq!(adapter.applied_migrations().await.unwrap().len(), 2);
+
+    // History table persists in the live DB.
+    let schema = run_sqlite(&db_path, ".schema _osdl_migrations");
+    assert!(schema.contains("_osdl_migrations"), "history table missing");
+
     let _ = std::fs::remove_file(&db_path);
 }
 

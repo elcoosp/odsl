@@ -56,6 +56,20 @@ pub struct Model {
     pub fields: Arena<Field>,
     pub field_index: Vec<(String, FieldIdx)>,
     pub line: usize,
+    /// Model-level composite indexes (`-index a,b`) and unique constraints
+    /// (`-uniq a,b`). Field-level `-index`/`-uniq` are stored on the field.
+    pub indexes: Vec<ModelIndex>,
+}
+
+/// A composite index/unique constraint declared at the model level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelIndex {
+    /// Index name, e.g. `idx_users_tenant_email`.
+    pub name: String,
+    /// Referenced field names (order matters).
+    pub fields: Vec<String>,
+    /// When true the constraint is UNIQUE.
+    pub unique: bool,
 }
 
 impl Model {
@@ -84,6 +98,12 @@ pub struct Field {
     pub name: String,
     pub ty: FieldType,
     pub intents: Vec<Intent>,
+    /// Closed value set when the field is a native enum (`-enum a,b`).
+    pub enum_variants: Vec<String>,
+    /// Database-side default value (`-default <value>`), e.g. `0`, `""`, `now`.
+    pub default_value: Option<String>,
+    /// Target model for a many-to-many relationship (`-m2m <Target>`).
+    pub m2m_target: Option<String>,
     pub line: usize,
 }
 
@@ -110,6 +130,15 @@ impl Field {
 pub struct LockModel {
     pub name: String,
     pub fields: Vec<LockField>,
+    /// Model-level composite indexes / unique constraints.
+    pub indexes: Vec<LockIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockIndex {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub unique: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +146,13 @@ pub struct LockField {
     pub name: String,
     pub ty: String,
     pub intents: Vec<String>,
+    /// Closed value set for native enums (`-enum a,b`); empty otherwise.
+    pub enum_variants: Vec<String>,
+    /// Database-side default value (`-default <value>`); `None` when absent.
+    pub default_value: Option<String>,
+    /// Target model for a many-to-many relationship (`-m2m <Target>`); `None`
+    /// when the field is not an m2m join.
+    pub m2m_target: Option<String>,
 }
 
 impl LockModel {
@@ -136,26 +172,136 @@ impl Ast {
                 let mut fields: Vec<LockField> = m
                     .fields
                     .iter()
-                    .map(|(_, f)| LockField {
-                        name: f.name.clone(),
-                        ty: f.type_keyword(),
-                        intents: f
+                    .map(|(_, f)| {
+                        let mut variants = f.enum_variants.clone();
+                        variants.sort();
+                        let mut intents: Vec<String> = f
                             .intents
                             .iter()
                             .map(|i| i.as_keyword().to_string())
-                            .collect(),
+                            .collect();
+                        // Encode the m2m target into the intents so the
+                        // lockfile stays deterministic and diffable.
+                        if let Some(t) = &f.m2m_target {
+                            intents.push(format!("-m2m {t}"));
+                        }
+                        LockField {
+                            name: f.name.clone(),
+                            ty: f.type_keyword(),
+                            intents,
+                            enum_variants: variants,
+                            default_value: f.default_value.clone(),
+                            m2m_target: f.m2m_target.clone(),
+                        }
                     })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
+                let mut indexes: Vec<LockIndex> = m
+                    .indexes
+                    .iter()
+                    .map(|i| LockIndex {
+                        name: i.name.clone(),
+                        fields: i.fields.clone(),
+                        unique: i.unique,
+                    })
+                    .collect();
+                indexes.sort_by(|a, b| a.name.cmp(&b.name));
                 LockModel {
                     name: m.name.clone(),
                     fields,
+                    indexes,
                 }
             })
             .collect();
         models.sort_by(|a, b| a.name.cmp(&b.name));
+        // Expand `-m2m` relationships into junction tables: the m2m field is
+        // removed from its source model (it is not a real column) and a
+        // `<Source>_<Target>` junction model is appended.
+        expand_m2m_junctions(&mut models);
         models
     }
+}
+
+/// Expand many-to-many fields into junction-table [`LockModel`]s.
+///
+/// For every field carrying `-m2m <Target>`:
+/// * the field is removed from its source model (it is not a column), and
+/// * a junction model `{Source}_{Target}` is created with the source and target
+///   primary-key columns (as foreign keys) plus a composite unique constraint.
+fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
+    // (source, target, source_field_name) collected before mutating.
+    let mut junctions: Vec<(String, String)> = Vec::new();
+    for m in models.iter_mut() {
+        let mut i = 0;
+        while i < m.fields.len() {
+            let m2m = m.fields[i]
+                .intents
+                .iter()
+                .find(|i| i.starts_with("-m2m "))
+                .map(|s| s["-m2m ".len()..].to_string());
+            if let Some(target) = m2m {
+                junctions.push((m.name.clone(), target));
+                m.fields.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    for (source, target) in junctions {
+        let source_l = to_snake(&source);
+        let target_l = to_snake(&target);
+        let jname = format!("{source}_{target}");
+        let mut fields = vec![
+            LockField {
+                name: "id".into(),
+                ty: "uuid".into(),
+                intents: vec!["-pk".into()],
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+            },
+            LockField {
+                name: format!("{source_l}_id"),
+                ty: format!("{source}.id"),
+                intents: vec!["-uniq".into()],
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+            },
+            LockField {
+                name: format!("{target_l}_id"),
+                ty: format!("{target}.id"),
+                intents: vec!["-uniq".into()],
+                enum_variants: vec![],
+                default_value: None,
+                m2m_target: None,
+            },
+        ];
+        fields.sort_by(|a, b| a.name.cmp(&b.name));
+        let indexes = vec![LockIndex {
+            name: format!("uniq_{source_l}_id_{target_l}_id"),
+            fields: vec![format!("{source_l}_id"), format!("{target_l}_id")],
+            unique: true,
+        }];
+        models.push(LockModel {
+            name: jname,
+            fields,
+            indexes,
+        });
+    }
+    models.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// Convert a `ModelName` to `model_name` (snake_case).
+fn to_snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.char_indices() {
+        if i != 0 && c.is_uppercase() {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
 }
 
 /// Helper to construct a [`ModelIdx`] from a raw integer (used by tests).
@@ -176,11 +322,15 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         user.add_field(Field {
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -198,11 +348,15 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         a.add_field(Field {
             name: "name".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
             line: 1,
         });
         let mut b = Model {
@@ -210,17 +364,24 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         b.add_field(Field {
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Int),
             intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
             line: 1,
         });
         b.add_field(Field {
             name: "z".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
             line: 2,
         });
         ast.add_model(a);

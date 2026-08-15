@@ -34,6 +34,8 @@ impl Validator {
         Self::resolve_references(ast)?;
         Self::check_keys(ast)?;
         Self::check_intent_compat(ast)?;
+        Self::check_model_indexes(ast)?;
+        Self::check_m2m_targets(ast)?;
         if let Some(t) = target {
             Self::check_target_compat(ast, t)?;
             Self::prevent_cycles(ast)?;
@@ -83,6 +85,77 @@ impl Validator {
                         return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
                             intent: intent.as_keyword().to_string(),
                             ty: field.type_keyword(),
+                        }));
+                    }
+                    // An enum must be a string field with at least one variant.
+                    if *intent == Intent::Enum
+                        && !matches!(field.ty, FieldType::Scalar(ScalarType::String))
+                    {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-enum".into(),
+                            ty: field.type_keyword(),
+                        }));
+                    }
+                    if *intent == Intent::Enum && field.enum_variants.is_empty() {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-enum".into(),
+                            ty: "requires at least one variant".into(),
+                        }));
+                    }
+                    // A `now` default is only valid for temporal types.
+                    if *intent == Intent::Default
+                        && let Some(value) = &field.default_value
+                        && value == "now"
+                        && !matches!(
+                            field.ty,
+                            FieldType::Scalar(ScalarType::DateTime)
+                                | FieldType::Scalar(ScalarType::Date)
+                        )
+                    {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-default now".into(),
+                            ty: field.type_keyword(),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-007 (model-level): every field referenced by a composite
+    /// `-index`/`-uniq` constraint must exist on the model.
+    fn check_model_indexes(ast: &Ast) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            for index in &model.indexes {
+                for field in &index.fields {
+                    if model.field_by_name(field).is_none() {
+                        return Err(OsdlError::compile(CompileErrorKind::UnresolvedReference {
+                            from: format!("{}.{}", model.name, index.name),
+                            target: field.clone(),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// REQ-FUNC-007 (m2m): every `-m2m <Target>` must reference an existing model.
+    fn check_m2m_targets(ast: &Ast) -> Result<(), OsdlError> {
+        for (_midx, model) in ast.models() {
+            for (_fidx, field) in model.fields() {
+                if field.has(Intent::M2m) {
+                    let Some(target) = &field.m2m_target else {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-m2m".into(),
+                            ty: "requires a target model".into(),
+                        }));
+                    };
+                    if ast.model_by_name(target).is_none() {
+                        return Err(OsdlError::compile(CompileErrorKind::UnresolvedReference {
+                            from: format!("{}.{}", model.name, field.name),
+                            target: target.clone(),
                         }));
                     }
                 }
@@ -201,7 +274,7 @@ fn dfs(
 fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
     use Intent::*;
     match intent {
-        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index => true,
+        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m => true,
         Fulltext => {
             // Full-text search only makes sense on textual types.
             matches!(ty, FieldType::Scalar(ScalarType::String))
@@ -216,14 +289,23 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
     use Target::*;
     match (target, intent) {
         // SQL backends support these intents natively.
-        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index) => true,
+        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m) => {
+            true
+        }
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
-        (SeaOrmPostgres, Pk | Uniq | Null | Auto | Tz | Relation | Index) => true,
+        (
+            SeaOrmPostgres | SeaOrmMysql,
+            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m,
+        ) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
+        (SeaOrmMysql, Fulltext) => true,      // MySQL FULLTEXT index
+        (SeaOrmMysql, Partition) => false,    // partition requires table-level DDL here
         // Mongo supports these natively.
-        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index) => true,
+        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m) => {
+            true
+        }
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index
     }

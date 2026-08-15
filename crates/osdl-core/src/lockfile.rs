@@ -79,6 +79,21 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         name: name.to_string(),
         ty: ty.to_string(),
         intents: intents.iter().map(|s| s.to_string()).collect(),
+        enum_variants: vec![],
+        default_value: None,
+        m2m_target: None,
+    }
+}
+
+/// Build a lock field that carries native-enum variants.
+pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]) -> LockField {
+    LockField {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        intents: intents.iter().map(|s| s.to_string()).collect(),
+        enum_variants: variants.iter().map(|s| s.to_string()).collect(),
+        default_value: None,
+        m2m_target: None,
     }
 }
 
@@ -96,17 +111,24 @@ mod tests {
             fields: Arena::new(),
             field_index: vec![],
             line: 1,
+            indexes: vec![],
         };
         user.add_field(Field {
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
             line: 1,
         });
         user.add_field(Field {
             name: "email".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Uniq],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
             line: 2,
         });
         ast.add_model(user);
@@ -134,5 +156,152 @@ mod tests {
         let f = lock_field("name", "string", &["-uniq"]);
         assert_eq!(f.name, "name");
         assert_eq!(f.intents, vec!["-uniq".to_string()]);
+    }
+
+    #[test]
+    fn enum_variants_survive_lockfile_round_trip() {
+        use crate::ast::{Ast, Field, Model};
+        let mut ast = Ast::new();
+        let mut user = Model {
+            name: "User".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+        };
+        user.add_field(Field {
+            name: "status".into(),
+            ty: FieldType::Scalar(ScalarType::String),
+            intents: vec![Intent::Enum],
+            enum_variants: vec!["active".into(), "inactive".into()],
+            default_value: None,
+            m2m_target: None,
+            line: 2,
+        });
+        ast.add_model(user);
+        let lf = Lockfile::from_ast(&ast);
+        let text = lf.to_string_pretty().unwrap();
+        let parsed = Lockfile::from_str(&text).unwrap();
+        assert_eq!(lf, parsed);
+        let got = &parsed.models[0].fields[0].enum_variants;
+        assert_eq!(got, &vec!["active".to_string(), "inactive".to_string()]);
+    }
+
+    #[test]
+    fn model_indexes_survive_lockfile_round_trip() {
+        use crate::ast::{Ast, Field, Model, ModelIndex};
+        let mut ast = Ast::new();
+        let mut user = Model {
+            name: "User".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+        };
+        user.add_field(Field {
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 2,
+        });
+        user.add_field(Field {
+            name: "tenant_id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 3,
+        });
+        user.add_field(Field {
+            name: "email".into(),
+            ty: FieldType::Scalar(ScalarType::String),
+            intents: vec![],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 4,
+        });
+        user.indexes.push(ModelIndex {
+            name: "uniq_tenant_id_email".into(),
+            fields: vec!["tenant_id".into(), "email".into()],
+            unique: true,
+        });
+        ast.add_model(user);
+        let lf = Lockfile::from_ast(&ast);
+        let text = lf.to_string_pretty().unwrap();
+        let parsed = Lockfile::from_str(&text).unwrap();
+        assert_eq!(lf, parsed);
+        let got = &parsed.models[0].indexes[0];
+        assert_eq!(got.name, "uniq_tenant_id_email");
+        assert_eq!(
+            got.fields,
+            vec!["tenant_id".to_string(), "email".to_string()]
+        );
+        assert!(got.unique);
+    }
+
+    #[test]
+    fn m2m_expands_to_junction_table() {
+        use crate::ast::{Ast, Field, Model};
+        use crate::types::{Intent, ScalarType};
+        let mut ast = Ast::new();
+        let mut user = Model {
+            name: "User".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+        };
+        user.add_field(Field {
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 1,
+        });
+        user.add_field(Field {
+            name: "posts".into(),
+            ty: FieldType::InferredRef("posts".into()),
+            intents: vec![Intent::M2m],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: Some("Post".into()),
+            line: 2,
+        });
+        let mut post = Model {
+            name: "Post".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 3,
+            indexes: vec![],
+        };
+        post.add_field(Field {
+            name: "id".into(),
+            ty: FieldType::Scalar(ScalarType::Uuid),
+            intents: vec![Intent::Pk],
+            enum_variants: vec![],
+            default_value: None,
+            m2m_target: None,
+            line: 4,
+        });
+        ast.add_model(user);
+        ast.add_model(post);
+        let lf = Lockfile::from_ast(&ast);
+        // The junction table exists and the m2m field is gone from User.
+        let user_lm = lf.model_by_name("User").unwrap();
+        assert!(user_lm.field_by_name("posts").is_none());
+        let j = lf
+            .model_by_name("User_Post")
+            .expect("junction table missing");
+        assert!(j.field_by_name("user_id").is_some());
+        assert!(j.field_by_name("post_id").is_some());
+        assert!(j.indexes.iter().any(|i| i.unique
+            && i.fields == vec!["user_id".to_string(), "post_id".to_string()]));
     }
 }

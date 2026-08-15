@@ -91,20 +91,26 @@ pub fn render_migration(
     dialect: SqlDialect,
     plan: &MigrationPlan,
     target: &Lockfile,
+    current: Option<&Lockfile>,
 ) -> RenderedMigration {
     let file_name = format!("{}_{}.sql", timestamp(), slugify(plan));
-    let contents = render_sql(dialect, plan, target);
+    let contents = render_sql(dialect, plan, target, current);
     RenderedMigration {
         file_name,
         contents,
     }
 }
 
-fn render_sql(dialect: SqlDialect, plan: &MigrationPlan, target: &Lockfile) -> String {
+fn render_sql(
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> String {
     let up: Vec<String> = plan
         .ops
         .iter()
-        .flat_map(|op| op_to_sql(dialect, op, target))
+        .flat_map(|op| op_to_sql(dialect, op, target, current))
         .collect();
     // Down is the reverse op order with inverse statements.
     let down: Vec<String> = plan
@@ -139,16 +145,17 @@ fn render_sql(dialect: SqlDialect, plan: &MigrationPlan, target: &Lockfile) -> S
 
 /// Inverse DDL for a single op (used by the down section).
 fn down_sql(dialect: SqlDialect, op: &MigrationOp) -> Option<String> {
-    use crate::naming::{quote_ident, table_name};
+    use crate::naming::{quote_ident_for, table_name};
     match op {
-        MigrationOp::CreateModel { model } => {
-            Some(format!("DROP TABLE {}", quote_ident(&table_name(model))))
-        }
+        MigrationOp::CreateModel { model } => Some(format!(
+            "DROP TABLE {}",
+            quote_ident_for(dialect, &table_name(model))
+        )),
         MigrationOp::DropModel { .. } => None, // cannot recreate without prior schema
         MigrationOp::AddField { model, field, .. } => Some(format!(
             "ALTER TABLE {} DROP COLUMN {}",
-            quote_ident(&table_name(model)),
-            quote_ident(field)
+            quote_ident_for(dialect, &table_name(model)),
+            quote_ident_for(dialect, field)
         )),
         MigrationOp::DropField { .. } => None,
         MigrationOp::AlterField { .. } => {
@@ -159,6 +166,9 @@ fn down_sql(dialect: SqlDialect, op: &MigrationOp) -> Option<String> {
                 }
                 SqlDialect::Postgres => {
                     "-- postgres: ALTER COLUMN TYPE rollback must be supplied manually".to_string()
+                }
+                SqlDialect::Mysql => {
+                    "-- mysql: ALTER COLUMN TYPE rollback must be supplied manually".to_string()
                 }
             })
         }
@@ -250,6 +260,26 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                         ));
                         idx_calls.push(format!("        manager.create_index(ix{i}).await?;"));
                     }
+                }
+            }
+            // Model-level composite indexes (`-index a,b` / `-uniq a,b`).
+            if let Some(lm) = &lm {
+                for index in &lm.indexes {
+                    let i = idx_binds.len();
+                    let unique_lit = index.unique;
+                    let mut binds = format!(
+                        "        let mut ix{i} = Index::create();\n        ix{i}.name(\"{name}\").table(\"{tbl}\")",
+                        name = index.name
+                    );
+                    for f in &index.fields {
+                        binds.push_str(&format!("\n        ix{i}.col(\"{f}\")"));
+                    }
+                    if unique_lit {
+                        binds.push_str(&format!("\n        ix{i}.unique()"));
+                    }
+                    binds.push(';');
+                    idx_binds.push(binds);
+                    idx_calls.push(format!("        manager.create_index(ix{i}).await?;"));
                 }
             }
             let mut lines: Vec<String> = Vec::new();
@@ -454,6 +484,13 @@ fn seaorm_down_stmt(op: &MigrationOp, target: &Lockfile) -> Option<String> {
                         ));
                     }
                 }
+                // Model-level composite indexes.
+                for index in &lm.indexes {
+                    lines.push(format!(
+                        "        manager.drop_index(\n            Index::drop()\n                .name(\"{name}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;",
+                        name = index.name
+                    ));
+                }
             }
             lines.push(format!(
                 "        manager.drop_table(\n            Table::drop()\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
@@ -567,6 +604,7 @@ pub fn write_migration(
     dialect: SqlDialect,
     plan: &MigrationPlan,
     target: &Lockfile,
+    current: Option<&Lockfile>,
 ) -> std::io::Result<Option<String>> {
     if plan.ops.is_empty() {
         return Ok(None);
@@ -574,7 +612,7 @@ pub fn write_migration(
     match format {
         MigrationFormat::Sql => {
             std::fs::create_dir_all(dir)?;
-            let rendered = render_migration(dialect, plan, target);
+            let rendered = render_migration(dialect, plan, target, current);
             let path = dir.join(&rendered.file_name);
             std::fs::write(&path, rendered.contents)?;
             Ok(Some(rendered.file_name))
@@ -628,6 +666,7 @@ mod tests {
                     lock_field("id", "uuid", &["-pk"]),
                     lock_field("email", "string", &["-uniq"]),
                 ],
+                indexes: vec![],
             }],
         }
     }
@@ -642,7 +681,7 @@ mod tests {
 
     #[test]
     fn sql_file_has_up_and_down() {
-        let out = render_migration(SqlDialect::Sqlite, &plan(), &lf());
+        let out = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
         assert!(out.file_name.ends_with(".sql"));
         assert!(out.contents.contains("-- up"));
         assert!(out.contents.contains("-- down"));
@@ -652,8 +691,8 @@ mod tests {
 
     #[test]
     fn slug_is_stable() {
-        let a = render_migration(SqlDialect::Sqlite, &plan(), &lf());
-        let b = render_migration(SqlDialect::Sqlite, &plan(), &lf());
+        let a = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
+        let b = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
         let suffix = |s: &str| s.rsplit_once('_').map(|(_, r)| r.to_string()).unwrap();
         assert_eq!(suffix(&a.file_name), suffix(&b.file_name));
         assert!(a.file_name.ends_with("create_user.sql"));
@@ -680,6 +719,7 @@ mod tests {
                 LockModel {
                     name: "User".into(),
                     fields: vec![lock_field("id", "uuid", &["-pk"])],
+                    indexes: vec![],
                 },
                 LockModel {
                     name: "Post".into(),
@@ -687,6 +727,7 @@ mod tests {
                         lock_field("id", "uuid", &["-pk"]),
                         lock_field("author", "User.id", &[]),
                     ],
+                    indexes: vec![],
                 },
             ],
         };
@@ -703,6 +744,39 @@ mod tests {
     }
 
     #[test]
+    fn seaorm_migration_emits_composite_model_index() {
+        let target = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![lock_field("id", "uuid", &["-pk"])],
+                indexes: vec![osdl_core::ast::LockIndex {
+                    name: "uniq_tenant_id_email".into(),
+                    fields: vec!["tenant_id".into(), "email".into()],
+                    unique: true,
+                }],
+            }],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "User".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        // Composite index via SeaQuery Index::create() with multiple .col().
+        assert!(out.contains("Index::create()"));
+        assert!(out.contains("uniq_tenant_id_email"));
+        assert!(out.contains(".col(\"tenant_id\")"));
+        assert!(out.contains(".col(\"email\")"));
+        assert!(out.contains(".unique()"));
+        assert!(out.contains("manager.create_index("));
+        // Down drops it via Index::drop().
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
     fn seaorm_migration_emits_secondary_index() {
         let target = Lockfile {
             version: Lockfile::VERSION,
@@ -714,6 +788,7 @@ mod tests {
                     lock_field("email", "string", &["-uniq"]),
                     lock_field("name", "string", &["-index"]),
                 ],
+                indexes: vec![],
             }],
         };
         let plan = MigrationPlan {
@@ -743,6 +818,7 @@ mod tests {
                     lock_field("id", "uuid", &["-pk"]),
                     lock_field("name", "string", &["-index"]),
                 ],
+                indexes: vec![],
             }],
         };
         let plan = MigrationPlan {
@@ -826,7 +902,7 @@ mod tests {
     #[test]
     fn empty_plan_writes_nothing() {
         let empty = MigrationPlan { ops: vec![] };
-        let out = render_migration(SqlDialect::Sqlite, &empty, &lf());
+        let out = render_migration(SqlDialect::Sqlite, &empty, &lf(), None);
         assert!(out.contents.contains("(no changes)"));
     }
 }

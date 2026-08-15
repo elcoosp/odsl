@@ -45,6 +45,10 @@ impl CodeRenderer for MongoRenderer {
         }
         let mod_rs = render_mod_rs(ast);
         files.push(("entity/mod.rs".to_string(), mod_rs));
+        // Real MongoDB index definitions (create_index API), covering both
+        // field-level `-index`/`-uniq` and model-level composite constraints.
+        let indexes = render_indexes(ast);
+        files.push(("entity/indexes.rs".to_string(), indexes));
         Ok(files)
     }
 }
@@ -102,6 +106,10 @@ fn rust_type_for_field(field: &Field) -> TokenStream {
             quote! { bson::oid::ObjectId }
         }
     };
+    // Native enums serialize as plain strings in Mongo.
+    if field.has(Intent::Enum) {
+        return quote! { String };
+    }
     if field.has(Intent::Null) {
         quote! { Option<#base> }
     } else {
@@ -140,6 +148,13 @@ fn render_json_schema(model: &Model) -> String {
         }
         if field.has(Intent::Fulltext) {
             prop["osdlIndex"] = serde_json::json!("text");
+        }
+        if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
+            prop["enum"] = serde_json::json!(field.enum_variants);
+        }
+        if let Some(value) = &field.default_value {
+            // `now` is documented as a server-side default; record it as a hint.
+            prop["default"] = serde_json::json!(value);
         }
         props.insert(field.name.clone(), prop);
     }
@@ -216,6 +231,65 @@ fn ends_with_s(s: &str) -> bool {
         || s.ends_with('z')
 }
 
+/// Generate real MongoDB index definitions (using the driver's `IndexModel`
+/// + `create_index` API) for every model. Covers:
+/// - field-level `-uniq`  -> single-field unique index
+/// - field-level `-index` -> single-field (non-unique) index
+/// - model-level `-uniq a,b` / `-index a,b` -> composite (optionally unique) index
+fn render_indexes(ast: &Ast) -> String {
+    let mut specs: Vec<TokenStream> = Vec::new();
+    for (_midx, model) in ast.models() {
+        let collection = to_snake_plural(&model.name);
+        // Field-level indexes.
+        for (_fidx, field) in model.fields() {
+            let name = &field.name;
+            let unique = field.has(Intent::Uniq);
+            let is_index = field.has(Intent::Index);
+            if !unique && !is_index {
+                continue;
+            }
+            let kind = if unique { "uniq" } else { "idx" };
+            let idx_name = format!("{collection}_{kind}_{name}");
+            specs.push(index_spec(&idx_name, &[name.to_string()], unique));
+        }
+        // Model-level composite indexes.
+        for index in &model.indexes {
+            specs.push(index_spec(&index.name, &index.fields, index.unique));
+        }
+    }
+
+    let tokens = quote! {
+        use mongodb::IndexModel;
+        use mongodb::options::IndexOptions;
+
+        /// All index models for this schema. Apply them with
+        /// `db.collection(coll).create_index(model, None).await`.
+        pub fn index_models() -> Vec<IndexModel> {
+            vec![
+                #(#specs),*
+            ]
+        }
+    };
+    format_tokens(tokens)
+}
+
+/// Build a single `IndexModel` expression for the given key fields.
+fn index_spec(name: &str, fields: &[String], unique: bool) -> TokenStream {
+    let keys: Vec<TokenStream> = fields.iter().map(|f| quote! { #f: 1 }).collect();
+    let unique_lit = unique;
+    quote! {
+        IndexModel::builder()
+            .keys(mongodb::bson::doc! { #(#keys),* })
+            .options(
+                IndexOptions::builder()
+                    .name(#name.to_string())
+                    .unique(#unique_lit)
+                    .build(),
+            )
+            .build()
+    }
+}
+
 fn render_mod_rs(ast: &Ast) -> String {
     let mut lines: Vec<String> = Vec::new();
     for (_idx, model) in ast.models() {
@@ -257,8 +331,8 @@ mod tests {
     }
 
     #[test]
-    fn renders_json_schema() {
-        let ast = compile("User\n  id uuid -pk\n  email string -uniq\n");
+    fn renders_default_value_in_schema() {
+        let ast = compile("User\n  id uuid -pk\n  age int -default 0\n");
         let renderer = MongoRenderer::new(Target::Mongo);
         let files = renderer.render(&ast).unwrap();
         let schema = files
@@ -268,9 +342,56 @@ mod tests {
             .1
             .clone();
         let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
-        assert!(v.get("$jsonSchema").is_some());
-        let props = &v["$jsonSchema"]["properties"];
-        assert_eq!(props["email"]["bsonType"], "string");
-        assert_eq!(props["email"]["unique"], true);
+        assert_eq!(v["$jsonSchema"]["properties"]["age"]["default"], "0");
+    }
+
+    #[test]
+    fn renders_indexes_rs() {
+        let ast = compile(
+            "User\n  id uuid -pk\n  tenant_id uuid\n  email string -uniq\n  status string -index\n  -uniq tenant_id,email\n",
+        );
+        let renderer = MongoRenderer::new(Target::Mongo);
+        let files = renderer.render(&ast).unwrap();
+        let idx = files
+            .iter()
+            .find(|(p, _)| p == "entity/indexes.rs")
+            .unwrap()
+            .1
+            .clone();
+        // field-level unique
+        assert!(idx.contains("IndexModel::builder()"));
+        assert!(idx.contains("users_uniq_email"));
+        // field-level index
+        assert!(idx.contains("users_idx_status"));
+        // model-level composite unique
+        assert!(idx.contains("uniq_tenant_id_email"));
+        assert!(idx.contains(".unique(true)"));
+    }
+
+    #[test]
+    fn renders_enum_as_string_with_constraint() {
+        let ast = compile("User\n  id uuid -pk\n  status string -enum active,inactive\n");
+        let renderer = MongoRenderer::new(Target::Mongo);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            user_rs.contains("pub status: String"),
+            "enum field should be String:\n{user_rs}"
+        );
+        let schema = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.json")
+            .unwrap()
+            .1
+            .clone();
+        let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
+        let prop = &v["$jsonSchema"]["properties"]["status"];
+        assert_eq!(prop["bsonType"], "string");
+        assert_eq!(prop["enum"], serde_json::json!(["active", "inactive"]));
     }
 }

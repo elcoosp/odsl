@@ -8,6 +8,7 @@ members = [
     "crates/osdl-migrator",
     "crates/osdl-adapter",
     "crates/osdl-cli",
+    "crates/osdl-lsp",
 ]
 resolver = "2"
 
@@ -26,6 +27,7 @@ miette = { version = "7.6", features = ["fancy"] }
 thiserror = "2.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+notify = "6"
 
 # Parsing & AST
 pest = "2.9"
@@ -44,12 +46,15 @@ serde_json = "1.0"
 sha2 = "0.11"
 
 # Database Execution
-sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio-native-tls"] }
+sea-orm = { version = "2.0", features = ["sqlx-sqlite", "sqlx-postgres", "sqlx-mysql", "runtime-tokio-native-tls"] }
 sea-orm-migration = "2.0"
 mongodb = "3.8"
 tokio = { version = "1.53", features = ["full"] }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+
+# Language Server
+async-lsp = { version = "0.2", features = ["async-io"] }
 
 # Testing & benchmarking
 insta = "1.48"
@@ -64,3 +69,4 @@ osdl-codegen-seaorm = { path = "crates/osdl-codegen-seaorm" }
 osdl-codegen-mongo = { path = "crates/osdl-codegen-mongo" }
 osdl-migrator = { path = "crates/osdl-migrator" }
 osdl-adapter = { path = "crates/osdl-adapter" }
+osdl-lsp = { path = "crates/osdl-lsp" }

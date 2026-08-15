@@ -138,10 +138,10 @@ pub enum OsdlError {
     },
 
     #[error("IO error: {0}")]
-    Io(String),
+    Io(#[from] std::io::Error),
 
     #[error("JSON error: {0}")]
-    Json(String),
+    Json(#[from] serde_json::Error),
 }
 
 impl OsdlError {
@@ -188,14 +188,30 @@ impl Diagnostic for OsdlError {
     }
 }
 
-impl From<std::io::Error> for OsdlError {
-    fn from(e: std::io::Error) -> Self {
-        OsdlError::Io(e.to_string())
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl From<serde_json::Error> for OsdlError {
-    fn from(e: serde_json::Error) -> Self {
-        OsdlError::Json(e.to_string())
+    #[test]
+    fn io_from_converts_with_chain() {
+        // std::io::Error must convert via #[from] and remain a miette Diagnostic.
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "boom");
+        let e: OsdlError = io_err.into();
+        assert!(matches!(e, OsdlError::Io(_)));
+        // miette chaining: the inner io error should be reachable via source().
+        let inner = std::error::Error::source(&e);
+        assert!(
+            inner.is_some(),
+            "miette should chain the underlying io error"
+        );
+    }
+
+    #[test]
+    fn json_from_converts() {
+        let bad = "not json";
+        let json_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>(bad).unwrap_err();
+        let e: OsdlError = json_err.into();
+        assert!(matches!(e, OsdlError::Json(_)));
     }
 }

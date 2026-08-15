@@ -10,7 +10,7 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, Field, Model};
+use osdl_core::ast::{Ast, Field, Model, ModelIndex};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
 use pest::Parser;
@@ -30,8 +30,14 @@ pub use grammar::Rule;
 enum RawToken {
     Name(String),
     Flag(String),
-    Reference { model: String, field: String },
+    Reference {
+        model: String,
+        field: String,
+    },
     Word(String),
+    /// A quoted string literal (`"..."`); the inner content (quotes stripped)
+    /// is stored verbatim, e.g. `-default ""` yields `Quoted("")`.
+    Quoted(String),
 }
 
 struct ParsedLine {
@@ -89,8 +95,14 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
                 fields: la_arena::Arena::new(),
                 field_index: vec![],
                 line: pl.line_no,
+                indexes: vec![],
             };
-            let field_tokens: Vec<_> = pl.tokens.iter().skip(1).cloned().collect();
+            // Model-level composite indexes: `-index a,b` / `-uniq a,b`
+            // (may appear on the model-declaration line or as standalone lines).
+            let model_tokens: Vec<_> = pl.tokens.iter().skip(1).cloned().collect();
+            capture_model_index(&mut model, &model_tokens);
+
+            let field_tokens: Vec<_> = model_tokens;
             if !field_tokens.is_empty() {
                 add_field_from_tokens(
                     &mut model,
@@ -114,6 +126,11 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
                         .with_span(span_at(src, pl.byte_start, pl.byte_end, pl.line_no), src),
                     )),
                 };
+            // A standalone indented line that begins with `-index`/`-uniq` is a
+            // model-level composite-index directive, not a field.
+            if capture_model_index(m, &pl.tokens) {
+                continue;
+            }
             add_field_from_tokens(
                 m,
                 &pl.tokens,
@@ -130,6 +147,39 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
     }
 
     Ok(ast)
+}
+
+fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
+    // A model-level composite-index directive: `-index a,b` / `-uniq a,b`.
+    // Returns true if the tokens were consumed as such (so the caller should
+    // not treat the line as a field).
+    let (Some(RawToken::Flag(f)), Some(RawToken::Word(w))) = (tokens.first(), tokens.get(1)) else {
+        return false;
+    };
+    let unique = match f.as_str() {
+        "-uniq" | "-unique" => true,
+        "-index" | "-idx" => false,
+        _ => return false,
+    };
+    let fields: Vec<String> = w
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if fields.is_empty() {
+        return false;
+    }
+    let idx_name = format!(
+        "{}_{}",
+        if unique { "uniq" } else { "idx" },
+        fields.join("_")
+    );
+    model.indexes.push(ModelIndex {
+        name: idx_name,
+        fields,
+        unique,
+    });
+    true
 }
 
 fn add_field_from_tokens(
@@ -159,10 +209,34 @@ fn add_field_from_tokens(
 
     let mut ty: Option<FieldType> = None;
     let mut intents: Vec<Intent> = Vec::new();
+    let mut enum_variants: Vec<String> = Vec::new();
+    let mut default_value: Option<String> = None;
+    let mut m2m_target: Option<String> = None;
+    let mut capturing_enum = false;
+    let mut capturing_default = false;
+    let mut capturing_m2m = false;
 
     for tok in iter {
         match tok {
             RawToken::Flag(f) => {
+                if f == "-enum" {
+                    // The variants follow as a separate word token (e.g. `a,b`).
+                    intents.push(Intent::Enum);
+                    capturing_enum = true;
+                    continue;
+                }
+                if f == "-default" {
+                    // The value follows as a separate word token (e.g. `0`, `now`, `""`).
+                    intents.push(Intent::Default);
+                    capturing_default = true;
+                    continue;
+                }
+                if f == "-m2m" || f == "-many" {
+                    // The target model follows as a separate word/reference token.
+                    intents.push(Intent::M2m);
+                    capturing_m2m = true;
+                    continue;
+                }
                 let intent = parse_intent(f).ok_or_else(|| {
                     OsdlError::Parse(
                         ParseError::new(format!("unknown intent flag `{f}`"))
@@ -175,12 +249,32 @@ fn add_field_from_tokens(
                 model: rm,
                 field: rf,
             } => {
+                if capturing_m2m {
+                    capturing_m2m = false;
+                    m2m_target = Some(rm.clone());
+                    continue;
+                }
                 ty = Some(FieldType::Ref(Reference {
                     model: rm.clone(),
                     field: rf.clone(),
                 }));
             }
             RawToken::Word(w) => {
+                if capturing_enum {
+                    capturing_enum = false;
+                    enum_variants = w.split(',').map(|s| s.trim().to_string()).collect();
+                    continue;
+                }
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(w.trim().to_string());
+                    continue;
+                }
+                if capturing_m2m {
+                    capturing_m2m = false;
+                    m2m_target = Some(w.trim().to_string());
+                    continue;
+                }
                 if let Some(target) = w.strip_prefix("relation:") {
                     intents.push(Intent::Relation);
                     ty = Some(FieldType::InferredRef(format!("relation:{target}")));
@@ -195,6 +289,16 @@ fn add_field_from_tokens(
                     ty = Some(FieldType::InferredRef(w.clone()));
                 }
             }
+            RawToken::Quoted(q) => {
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(q.clone());
+                    continue;
+                }
+                // A bare quoted string as a type/ref token is unsupported;
+                // treat it as an inferred reference name (best-effort).
+                ty = Some(FieldType::InferredRef(q.clone()));
+            }
             RawToken::Name(_) => unreachable!("name only appears as first token"),
         }
     }
@@ -208,6 +312,9 @@ fn add_field_from_tokens(
         name,
         ty,
         intents,
+        enum_variants,
+        default_value,
+        m2m_target,
         line: line_no,
     });
     Ok(())
@@ -224,6 +331,9 @@ fn parse_intent(flag: &str) -> Option<Intent> {
         "-tz" | "-timezone" => Some(Intent::Tz),
         "-auto" | "-autoincrement" => Some(Intent::Auto),
         "-relation" => Some(Intent::Relation),
+        "-enum" => Some(Intent::Enum),
+        "-default" => Some(Intent::Default),
+        "-m2m" | "-many" => Some(Intent::M2m),
         _ => None,
     }
 }
@@ -277,6 +387,12 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                                     let (m, f) = split_reference(t.as_str());
                                     tokens.push(RawToken::Reference { model: m, field: f });
                                 }
+                                Rule::quoted => {
+                                    let s = t.as_str();
+                                    // Strip the surrounding double quotes.
+                                    let inner = if s.len() >= 2 { &s[1..s.len() - 1] } else { "" };
+                                    tokens.push(RawToken::Quoted(inner.to_string()));
+                                }
                                 Rule::word => tokens.push(RawToken::Word(t.as_str().to_string())),
                                 _ => {}
                             }
@@ -312,5 +428,74 @@ fn span_at(_src: &str, start: usize, end: usize, line: usize) -> Span {
         end,
         line,
         column: 1,
+    }
+}
+
+#[cfg(test)]
+mod enum_tests {
+    use super::*;
+    use osdl_core::types::Intent;
+
+    #[test]
+    fn parses_default_value() {
+        let src = "User\n  id uuid -pk\n  age int -default 0\n  created datetime -default now\n  bio string -default \"\"\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let age = m.fields().find(|(_, fl)| fl.name == "age").unwrap().1;
+        assert!(age.has(Intent::Default));
+        assert_eq!(age.default_value.as_deref(), Some("0"));
+        let created = m.fields().find(|(_, fl)| fl.name == "created").unwrap().1;
+        assert_eq!(created.default_value.as_deref(), Some("now"));
+        let bio = m.fields().find(|(_, fl)| fl.name == "bio").unwrap().1;
+        assert_eq!(bio.default_value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn parses_composite_model_indexes() {
+        let src = "User\n  id uuid -pk\n  tenant_id uuid\n  email string\n  -uniq tenant_id,email\n  -index tenant_id,created_at\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let uniq = m.indexes.iter().find(|i| i.unique).unwrap();
+        assert_eq!(
+            uniq.fields,
+            vec!["tenant_id".to_string(), "email".to_string()]
+        );
+        assert_eq!(uniq.name, "uniq_tenant_id_email");
+        let idx = m.indexes.iter().find(|i| !i.unique).unwrap();
+        assert_eq!(
+            idx.fields,
+            vec!["tenant_id".to_string(), "created_at".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_many_to_many() {
+        let src = "User\n  id uuid -pk\n  posts -m2m Post\nPost\n  id uuid -pk\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let f = m.fields().find(|(_, fl)| fl.name == "posts").unwrap().1;
+        assert!(f.has(Intent::M2m));
+        assert_eq!(f.m2m_target.as_deref(), Some("Post"));
+    }
+
+    #[test]
+    fn parses_enum_variants() {
+        let src = "User\n  id uuid -pk\n  status string -enum active,inactive,pending\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let f = m.fields().find(|(_, fl)| fl.name == "status").unwrap().1;
+        assert!(f.has(Intent::Enum));
+        assert_eq!(
+            f.enum_variants,
+            vec![
+                "active".to_string(),
+                "inactive".to_string(),
+                "pending".to_string()
+            ]
+        );
     }
 }
