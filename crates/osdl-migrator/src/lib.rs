@@ -14,6 +14,7 @@
 use osdl_core::ast::{Ast, LockField, LockModel};
 use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
+use osdl_core::Target;
 use std::collections::BTreeMap;
 
 /// A single, backend-agnostic schema change.
@@ -128,6 +129,87 @@ impl MigrationPlan {
     /// Whether the plan contains any data-destroying operation.
     pub fn is_destructive(&self) -> bool {
         !self.destructive_ops().is_empty()
+    }
+
+    /// Zero-downtime / safety advisories for the plan on a given backend target.
+    ///
+    /// These are *warnings*, not errors: the migration is still valid to apply,
+    /// but the listed ops may lock tables or risk data depending on the engine.
+    /// Returns a list of `(operation-index, advisory-message)` pairs.
+    pub fn advisories(&self, target: Target) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        for (i, op) in self.ops.iter().enumerate() {
+            match op {
+                MigrationOp::AddField {
+                    model,
+                    field,
+                    nullable,
+                    ..
+                } => {
+                    // Postgres/MySQL: adding a non-nullable column without a
+                    // default rewrites the whole table (long lock on big tables).
+                    if !*nullable
+                        && matches!(
+                            target,
+                            Target::SeaOrmPostgres | Target::SeaOrmMysql
+                        )
+                    {
+                        out.push((
+                            i,
+                            format!(
+                                "adding non-nullable column {model}.{field} on {} without a \
+                                 default will rewrite the entire table (table lock); add a \
+                                 -default or make it -null to deploy online",
+                                target_dialect_name(target)
+                            ),
+                        ));
+                    }
+                }
+                MigrationOp::AlterField { model, field, .. } => {
+                    // Changing type or constraints requires a table rewrite on
+                    // every engine; generally unsafe to do online.
+                    out.push((
+                        i,
+                        format!(
+                            "altering {model}.{field} rewrites the column and may lock the \
+                             table; prefer expand-and-contract (add new column, backfill, drop \
+                             old) for zero-downtime"
+                        ),
+                    ));
+                }
+                MigrationOp::DropModel { model } => {
+                    out.push((
+                        i,
+                        format!(
+                            "dropping model {model} destroys all of its data and any rows that \
+                             reference it (cascading); this is irreversible"
+                        ),
+                    ));
+                }
+                MigrationOp::DropField { model, field } => {
+                    out.push((
+                        i,
+                        format!(
+                            "dropping {model}.{field} destroys that column's data and cannot be \
+                             rolled back by the down migration"
+                        ),
+                    ));
+                }
+                MigrationOp::CreateModel { .. } => {}
+            }
+        }
+        out
+    }
+}
+
+/// Human-readable engine name for an advisory.
+fn target_dialect_name(target: Target) -> &'static str {
+    match target {
+        Target::SeaOrmPostgres => "Postgres",
+        Target::SeaOrmMysql => "MySQL",
+        Target::Mongo => "MongoDB",
+        Target::SeaOrmSqlite => "SQLite",
+        _ => "the target database",
     }
 }
 

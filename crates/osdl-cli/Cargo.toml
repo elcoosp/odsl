@@ -17,9 +17,13 @@ osdl-parser.workspace = true
 osdl-codegen.workspace = true
 osdl-codegen-seaorm.workspace = true
 osdl-codegen-mongo.workspace = true
+osdl-codegen-typescript.workspace = true
+osdl-codegen-graphql.workspace = true
+osdl-codegen-openapi.workspace = true
 osdl-migrator.workspace = true
 osdl-adapter.workspace = true
 osdl-lsp.workspace = true
+osdl-mcp.workspace = true
 
 clap.workspace = true
 miette.workspace = true

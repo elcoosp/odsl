@@ -15,12 +15,15 @@ use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_seaorm::SeaOrmRenderer;
+use osdl_codegen_typescript::TypeScriptRenderer;
+use osdl_codegen_graphql::GraphQLRenderer;
+use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_core::Target;
 use osdl_core::ast::Ast;
 use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
 use osdl_core::validator::CodeRenderer;
-use osdl_migrator::{plan_migration, read_lockfile, write_lockfile};
+use osdl_migrator::{plan_migration, read_lockfile, write_lockfile, MigrationPlan};
 use osdl_parser::parse;
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
@@ -74,6 +77,11 @@ enum Command {
     /// published on open/change using the same parse+validate pipeline as
     /// `osdl build`.
     Lsp,
+    /// Run the OSDL Model Context Protocol (MCP) server over stdio.
+    ///
+    /// AI agents (Claude, Cursor, Copilot, …) connect via the Model Context
+    /// Protocol and can read, validate, format and transpile schemas.
+    Mcp,
     /// Reverse-engineer a live database into an OSDL schema.
     ///
     /// Connects to `--db-url` (sqlite://, postgres://, mysql://), reads the
@@ -85,6 +93,15 @@ enum Command {
         /// Output `.osdl` file (defaults to `schema.osdl`).
         #[arg(default_value = "schema.osdl")]
         out: std::path::PathBuf,
+    },
+    /// Deterministically reformat an `.osdl` file in place.
+    Fmt {
+        /// `.osdl` file to format (positional). Omit to read from stdin and
+        /// write the result to stdout.
+        file: Option<std::path::PathBuf>,
+        /// Target backend used for validation during formatting.
+        #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
+        target: Target,
     },
 }
 
@@ -134,6 +151,31 @@ enum MigrateAction {
         #[arg(long)]
         force: bool,
     },
+    /// Print the rollback (down) DDL for the current schema diff.
+    ///
+    /// Computes the inverse of `migrate up`: reverting the deployed schema
+    /// (osdl.lock) back to the schema in `schema.osdl`. Prints the down SQL.
+    Down {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Target backend (selects the DDL dialect).
+        #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
+        target: Target,
+    },
+    /// Show a visual diff between the deployed schema (`osdl.lock`), the live
+    /// database (`--db-url`), and the desired schema (`schema.osdl`).
+    Status {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Target backend (affects validation only).
+        #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
+        target: Target,
+        /// Optional live database connection URL to compare against.
+        #[arg(long)]
+        db_url: Option<String>,
+    },
 }
 
 fn main() -> Result<(), OsdlError> {
@@ -172,9 +214,19 @@ fn main() -> Result<(), OsdlError> {
                 db_url,
                 force,
             } => cmd_migrate_up(&input, target, db_url, force),
+            MigrateAction::Down { input, target } => cmd_migrate_down(&input, target),
+            MigrateAction::Status {
+                input,
+                target,
+                db_url,
+            } => cmd_migrate_status(&input, target, db_url),
         },
+        Command::Fmt { file, target } => cmd_fmt(file.as_deref(), target),
         Command::Lsp => {
             osdl_lsp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
+        }
+        Command::Mcp => {
+            osdl_mcp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
         }
         Command::Pull { db_url, out } => cmd_pull(&db_url, &out),
     }
@@ -323,6 +375,9 @@ fn run_build(
             SeaOrmRenderer::new(target).render(&ast)?
         }
         Target::Mongo => MongoRenderer::new(target).render(&ast)?,
+        Target::TypeScript => TypeScriptRenderer::new(target).render(&ast)?,
+        Target::GraphQl => GraphQLRenderer::new(target).render(&ast)?,
+        Target::OpenApi => OpenApiRenderer::new(target).render(&ast)?,
     };
     std::fs::create_dir_all(out)?;
     for (rel, contents) in &files {
@@ -512,7 +567,7 @@ fn cmd_migrate_create(
     .map_err(|e| io_err(format!("writing migration: {e}")))?;
     match written {
         Some(name) => {
-            println!("generated {}/{}", out.display(), name);
+            println!("generated {}/{name}", out.display());
             Ok(())
         }
         None => {
@@ -522,6 +577,131 @@ fn cmd_migrate_create(
     }
 }
 
+/// Rollback plan: revert the *deployed* schema (osdl.lock) back to the *desired*
+/// schema (schema.osdl). The inverse plan is `diff(target, current)` and its
+/// rendered down SQL is printed.
+fn cmd_migrate_down(input: &std::path::Path, target: Target) -> Result<(), OsdlError> {
+    let ast = load_ast(input, target)?;
+    let lock_path = input.with_file_name("osdl.lock");
+    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        version: Lockfile::VERSION,
+        checksum: String::new(),
+        models: vec![],
+    });
+    let target_lock = Lockfile::from_ast(&ast);
+    // Inverse plan: from the desired schema back to the deployed one.
+    let plan = MigrationPlan::diff(&target_lock, &current);
+    let dialect = match target {
+        Target::SeaOrmPostgres => SqlDialect::Postgres,
+        Target::SeaOrmMysql => SqlDialect::Mysql,
+        _ => SqlDialect::Sqlite,
+    };
+    let down = osdl_adapter::migrate::render_down_sql(dialect, &plan, &target_lock, Some(&current));
+    if down.is_empty() {
+        println!("no down migration (nothing to revert)");
+    } else {
+        println!("-- down (revert to schema.osdl state)");
+        for stmt in &down {
+            println!("{stmt};");
+        }
+    }
+    Ok(())
+}
+
+/// Show the drift between the deployed schema (osdl.lock), an optional live
+/// database (`--db-url`), and the desired schema (schema.osdl).
+fn cmd_migrate_status(
+    input: &std::path::Path,
+    target: Target,
+    db_url: Option<String>,
+) -> Result<(), OsdlError> {
+    let ast = load_ast(input, target)?;
+    let lock_path = input.with_file_name("osdl.lock");
+    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        version: Lockfile::VERSION,
+        checksum: String::new(),
+        models: vec![],
+    });
+    let target_lock = Lockfile::from_ast(&ast);
+    let plan = plan_migration(&current, &ast)?;
+
+    println!("=== schema.osdl (desired) vs osdl.lock (deployed) ===");
+    if plan.ops.is_empty() {
+        println!("  in sync — no pending changes");
+    } else {
+        for line in plan.describe() {
+            println!("  + {line}");
+        }
+        let advisories = plan.advisories(target);
+        if !advisories.is_empty() {
+            println!("  ! advisories (zero-downtime):");
+            for (_, msg) in advisories {
+                println!("    - {msg}");
+            }
+        }
+    }
+
+    if let Some(url) = &db_url {
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
+        let applied = runtime
+            .block_on(osdl_adapter::connect(url))
+            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
+        runtime
+            .block_on(applied.ensure_history_table())
+            .map_err(|e| io_err(format!("history table: {e}")))?;
+        let applied_migrations = runtime
+            .block_on(applied.applied_migrations())
+            .map_err(|e| io_err(format!("history read: {e}")))?;
+        println!("=== live database ({url}) ===");
+        if applied_migrations.iter().any(|n| n == &target_lock.checksum) {
+            println!("  schema checksum {chk} is applied", chk = &target_lock.checksum);
+        } else {
+            println!(
+                "  schema checksum {chk} NOT applied (database is behind or diverged)",
+                chk = &target_lock.checksum
+            );
+            println!("  applied migrations: {applied_migrations:?}");
+        }
+    }
+    Ok(())
+}
+
+/// Deterministically reformat an OSDL file.
+///
+/// When `file` is `Some`, the canonicalised content is written back to it (in
+/// place). When `None`, the source is read from stdin and the result printed to
+/// stdout.
+fn cmd_fmt(file: Option<&std::path::Path>, target: Target) -> Result<(), OsdlError> {
+    let src = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| io_err(format!("reading {}: {e}", path.display())))?,
+        None => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .map_err(|e| io_err(format!("reading stdin: {e}")))?;
+            buf
+        }
+    };
+    let formatted = {
+        let ast = osdl_parser::parse(&src)?;
+        osdl_core::validator::Validator::validate(&ast, Some(target))?;
+        osdl_core::formatter::format_ast(&ast)
+    };
+    match file {
+        Some(path) => {
+            std::fs::write(path, &formatted)
+                .map_err(|e| io_err(format!("writing {}: {e}", path.display())))?;
+            println!("formatted {}", path.display());
+        }
+        None => {
+            print!("{formatted}");
+        }
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
