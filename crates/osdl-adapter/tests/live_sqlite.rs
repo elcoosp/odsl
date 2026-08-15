@@ -38,7 +38,10 @@ async fn applies_create_and_add_field_to_live_sqlite() {
     };
 
     let adapter = connect(&url).await.expect("connect sqlite");
-    let applied = adapter.apply(&plan, &target).await.expect("apply plan");
+    let applied = adapter
+        .apply(&plan, &target, None)
+        .await
+        .expect("apply plan");
     assert_eq!(applied.len(), 1);
     assert!(applied[0].starts_with("CREATE TABLE"));
 
@@ -63,7 +66,7 @@ async fn applies_create_and_add_field_to_live_sqlite() {
         }],
     };
     let _ = adapter
-        .apply(&plan2, &target)
+        .apply(&plan2, &target, None)
         .await
         .expect("apply add field");
     let schema2 = run_sqlite(&db_path, ".schema users");
@@ -112,7 +115,7 @@ async fn applies_reference_as_foreign_key() {
         ],
     };
     let adapter = connect(&url).await.expect("connect");
-    adapter.apply(&plan, &target).await.expect("apply");
+    adapter.apply(&plan, &target, None).await.expect("apply");
     let schema = run_sqlite(&db_path, ".schema posts");
     assert!(
         schema.contains("REFERENCES \"users\"(\"id\")"),

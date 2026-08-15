@@ -41,12 +41,16 @@ pub trait SchemaAdapter: Send + Sync {
 
     /// Apply every op in `plan` against the live database, using `target` (the
     /// desired lockfile state) to materialize complete `CREATE TABLE` /
-    /// validator documents. Returns the SQL statements / Mongo commands that
-    /// were executed, in order, for logging/audit.
+    /// validator documents. `current` is the prior lockfile state (the baseline
+    /// being migrated from); it is required for SQLite table rebuilds that
+    /// preserve data when a column is added non-null, dropped, or altered.
+    /// Returns the SQL statements / Mongo commands that were executed, in
+    /// order, for logging/audit.
     async fn apply(
         &self,
         plan: &MigrationPlan,
         target: &Lockfile,
+        current: Option<&Lockfile>,
     ) -> Result<Vec<String>, AdapterError>;
 }
 
@@ -113,10 +117,11 @@ impl SchemaAdapter for SqlAdapter {
         &self,
         plan: &MigrationPlan,
         target: &Lockfile,
+        current: Option<&Lockfile>,
     ) -> Result<Vec<String>, AdapterError> {
         let mut applied = Vec::new();
         for op in &plan.ops {
-            for stmt in sql::op_to_sql(self.dialect, op, target) {
+            for stmt in sql::op_to_sql(self.dialect, op, target, current) {
                 // Skip informational comments (SQLite ALTER COLUMN no-op).
                 if stmt.trim_start().starts_with("--") {
                     applied.push(stmt);
@@ -149,6 +154,7 @@ impl SchemaAdapter for MongoAdapter {
         &self,
         plan: &MigrationPlan,
         target: &Lockfile,
+        _current: Option<&Lockfile>,
     ) -> Result<Vec<String>, AdapterError> {
         let mut applied = Vec::new();
         for op in &plan.ops {

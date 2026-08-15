@@ -259,7 +259,7 @@ fn cmd_migrate_up(
             .block_on(osdl_adapter::connect(url))
             .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
         let statements = runtime
-            .block_on(applied.apply(&plan, &target_lock))
+            .block_on(applied.apply(&plan, &target_lock, Some(&current)))
             .map_err(|e| io_err(format!("applying migration: {e}")))?;
         for stmt in &statements {
             println!("  applied: {stmt}");
@@ -304,8 +304,15 @@ fn cmd_migrate_create(
     } else {
         MigrationFormat::Sql
     };
-    let written = write_migration(out, format, dialect, &plan, &Lockfile::from_ast(&ast))
-        .map_err(|e| io_err(format!("writing migration: {e}")))?;
+    let written = write_migration(
+        out,
+        format,
+        dialect,
+        &plan,
+        &Lockfile::from_ast(&ast),
+        Some(&current),
+    )
+    .map_err(|e| io_err(format!("writing migration: {e}")))?;
     match written {
         Some(name) => {
             println!("generated {}/{}", out.display(), name);

@@ -61,7 +61,10 @@ async fn postgres_apply_create_model_live() {
     };
 
     let adapter = connect(&url).await.expect("connect postgres");
-    let applied = adapter.apply(&plan, &target).await.expect("apply plan");
+    let applied = adapter
+        .apply(&plan, &target, None)
+        .await
+        .expect("apply plan");
     assert_eq!(applied.len(), 1);
     assert!(
         applied[0].contains("CREATE TABLE"),
@@ -95,7 +98,10 @@ async fn mongo_apply_create_model_live() {
     };
 
     let adapter = connect(&url).await.expect("connect mongo");
-    adapter.apply(&plan, &target).await.expect("apply plan");
+    adapter
+        .apply(&plan, &target, None)
+        .await
+        .expect("apply plan");
     // Mongo applies validators; reaching here without error means the
     // collection + validator were created successfully.
 }

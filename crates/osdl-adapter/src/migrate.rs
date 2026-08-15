@@ -91,20 +91,26 @@ pub fn render_migration(
     dialect: SqlDialect,
     plan: &MigrationPlan,
     target: &Lockfile,
+    current: Option<&Lockfile>,
 ) -> RenderedMigration {
     let file_name = format!("{}_{}.sql", timestamp(), slugify(plan));
-    let contents = render_sql(dialect, plan, target);
+    let contents = render_sql(dialect, plan, target, current);
     RenderedMigration {
         file_name,
         contents,
     }
 }
 
-fn render_sql(dialect: SqlDialect, plan: &MigrationPlan, target: &Lockfile) -> String {
+fn render_sql(
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> String {
     let up: Vec<String> = plan
         .ops
         .iter()
-        .flat_map(|op| op_to_sql(dialect, op, target))
+        .flat_map(|op| op_to_sql(dialect, op, target, current))
         .collect();
     // Down is the reverse op order with inverse statements.
     let down: Vec<String> = plan
@@ -594,6 +600,7 @@ pub fn write_migration(
     dialect: SqlDialect,
     plan: &MigrationPlan,
     target: &Lockfile,
+    current: Option<&Lockfile>,
 ) -> std::io::Result<Option<String>> {
     if plan.ops.is_empty() {
         return Ok(None);
@@ -601,7 +608,7 @@ pub fn write_migration(
     match format {
         MigrationFormat::Sql => {
             std::fs::create_dir_all(dir)?;
-            let rendered = render_migration(dialect, plan, target);
+            let rendered = render_migration(dialect, plan, target, current);
             let path = dir.join(&rendered.file_name);
             std::fs::write(&path, rendered.contents)?;
             Ok(Some(rendered.file_name))
@@ -670,7 +677,7 @@ mod tests {
 
     #[test]
     fn sql_file_has_up_and_down() {
-        let out = render_migration(SqlDialect::Sqlite, &plan(), &lf());
+        let out = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
         assert!(out.file_name.ends_with(".sql"));
         assert!(out.contents.contains("-- up"));
         assert!(out.contents.contains("-- down"));
@@ -680,8 +687,8 @@ mod tests {
 
     #[test]
     fn slug_is_stable() {
-        let a = render_migration(SqlDialect::Sqlite, &plan(), &lf());
-        let b = render_migration(SqlDialect::Sqlite, &plan(), &lf());
+        let a = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
+        let b = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
         let suffix = |s: &str| s.rsplit_once('_').map(|(_, r)| r.to_string()).unwrap();
         assert_eq!(suffix(&a.file_name), suffix(&b.file_name));
         assert!(a.file_name.ends_with("create_user.sql"));
@@ -891,7 +898,7 @@ mod tests {
     #[test]
     fn empty_plan_writes_nothing() {
         let empty = MigrationPlan { ops: vec![] };
-        let out = render_migration(SqlDialect::Sqlite, &empty, &lf());
+        let out = render_migration(SqlDialect::Sqlite, &empty, &lf(), None);
         assert!(out.contents.contains("(no changes)"));
     }
 }
