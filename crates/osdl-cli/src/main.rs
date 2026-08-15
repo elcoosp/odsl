@@ -231,8 +231,12 @@ fn cmd_pull(db_url: &str, out: &std::path::Path) -> Result<(), OsdlError> {
     let osdl = rt
         .block_on(introspect_to_osdl(db_url))
         .map_err(|e| OsdlError::Io(std::io::Error::other(e)))?;
-    std::fs::write(out, &osdl)
-        .map_err(|e| OsdlError::Io(std::io::Error::other(format!("writing {}: {e}", out.display()))))?;
+    std::fs::write(out, &osdl).map_err(|e| {
+        OsdlError::Io(std::io::Error::other(format!(
+            "writing {}: {e}",
+            out.display()
+        )))
+    })?;
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -245,9 +249,7 @@ fn cmd_build_watch(
     target: Target,
     out: &std::path::Path,
 ) -> Result<(), OsdlError> {
-    use notify::{
-        Config, Event, RecommendedWatcher, RecursiveMode, Watcher,
-    };
+    use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -548,8 +550,14 @@ mod tests {
 
     #[test]
     fn watch_ignores_non_modify_events() {
-        let created = ev(EventKind::Create(notify::event::CreateKind::File), "/proj/schema.osdl");
-        let accessed = ev(EventKind::Access(notify::event::AccessKind::Any), "/proj/schema.osdl");
+        let created = ev(
+            EventKind::Create(notify::event::CreateKind::File),
+            "/proj/schema.osdl",
+        );
+        let accessed = ev(
+            EventKind::Access(notify::event::AccessKind::Any),
+            "/proj/schema.osdl",
+        );
         assert!(!event_triggers_rebuild(&created, "schema.osdl"));
         assert!(!event_triggers_rebuild(&accessed, "schema.osdl"));
     }

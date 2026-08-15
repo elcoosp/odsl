@@ -62,7 +62,6 @@ struct ColumnInfo {
 /// A (non-PK) composite or single-column index read from the catalog.
 struct IndexInfo {
     table: String,
-    name: String,
     columns: Vec<String>,
     unique: bool,
 }
@@ -159,7 +158,12 @@ async fn read_sqlite_columns(
     table: &str,
 ) -> Result<Vec<ColumnInfo>, String> {
     let table = sanitize_ident(table)?;
-    let rows = fetch(conn, Dialect::Sqlite, &format!("PRAGMA table_info('{table}')")).await?;
+    let rows = fetch(
+        conn,
+        Dialect::Sqlite,
+        &format!("PRAGMA table_info('{table}')"),
+    )
+    .await?;
     // pk is column index 5, notnull is 3, dflt_value is 4.
     let mut cols = Vec::new();
     for r in rows {
@@ -179,7 +183,12 @@ async fn read_sqlite_columns(
         });
     }
     // Promote PK + unique flag from index list.
-    let idx_rows = fetch(conn, Dialect::Sqlite, &format!("PRAGMA index_list('{table}')")).await?;
+    let idx_rows = fetch(
+        conn,
+        Dialect::Sqlite,
+        &format!("PRAGMA index_list('{table}')"),
+    )
+    .await?;
     for ir in idx_rows {
         // PRAGMA index_list columns: seq(0), name(1), unique(2), origin(3), partial(4).
         let iname: String = ir.try_get_by_index(1).map_err(|e| e.to_string())?;
@@ -192,7 +201,12 @@ async fn read_sqlite_columns(
             continue;
         }
         // A unique index with a single column => mark that column unique.
-        let info_rows = fetch(conn, Dialect::Sqlite, &format!("PRAGMA index_info('{iname}')")).await?;
+        let info_rows = fetch(
+            conn,
+            Dialect::Sqlite,
+            &format!("PRAGMA index_info('{iname}')"),
+        )
+        .await?;
         for info in info_rows {
             let cname: String = info.try_get_by_index(2).map_err(|e| e.to_string())?;
             if let Some(c) = cols.iter_mut().find(|c| c.name == cname) {
@@ -204,7 +218,10 @@ async fn read_sqlite_columns(
 }
 
 /// Postgres columns from `information_schema.columns` + key metadata.
-async fn read_pg_columns(conn: &DatabaseConnection, table: &str) -> Result<Vec<ColumnInfo>, String> {
+async fn read_pg_columns(
+    conn: &DatabaseConnection,
+    table: &str,
+) -> Result<Vec<ColumnInfo>, String> {
     let sql = format!(
         "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, \
                 CASE WHEN pk.attname IS NOT NULL THEN 1 ELSE 0 END AS is_pk, \
@@ -309,7 +326,6 @@ async fn read_indexes(
                 }
                 out.push(IndexInfo {
                     table: table.to_string(),
-                    name: iname,
                     columns: cols,
                     unique: unique != 0,
                 });
@@ -349,7 +365,10 @@ async fn read_indexes(
         let col: String = r.try_get_by_index(1).unwrap_or_default();
         let unique: bool = match dialect {
             Dialect::Postgres => r.try_get_by_index::<bool>(2).unwrap_or(false),
-            Dialect::Mysql => r.try_get_by_index::<i64>(2).map(|v| v == 0).unwrap_or(false),
+            Dialect::Mysql => r
+                .try_get_by_index::<i64>(2)
+                .map(|v| v == 0)
+                .unwrap_or(false),
             Dialect::Sqlite => unreachable!(),
         };
         if iname.is_empty() {
@@ -359,7 +378,6 @@ async fn read_indexes(
             .entry(iname.clone())
             .or_insert_with(|| IndexInfo {
                 table: table.to_string(),
-                name: iname.clone(),
                 columns: Vec::new(),
                 unique,
             })
@@ -386,8 +404,9 @@ fn map_type(raw: &str) -> &'static str {
         "date" => "date",
         "uuid" => "uuid",
         "json" | "jsonb" => "json",
-        "blob" | "bytea" | "binary" | "varbinary" | "longblob" | "mediumblob" | "tinyblob" =>
-            "binary",
+        "blob" | "bytea" | "binary" | "varbinary" | "longblob" | "mediumblob" | "tinyblob" => {
+            "binary"
+        }
         _ => "string",
     }
 }
@@ -395,7 +414,11 @@ fn map_type(raw: &str) -> &'static str {
 /// Render the collected catalog into OSDL source text.
 fn render_osdl(tables: &[String], columns: &[ColumnInfo], indexes: &[IndexInfo]) -> String {
     let mut out = String::new();
-    writeln!(out, "# OSDL schema (reverse-engineered from a live database).").ok();
+    writeln!(
+        out,
+        "# OSDL schema (reverse-engineered from a live database)."
+    )
+    .ok();
     writeln!(out, "# Review and refine before committing.").ok();
 
     for table in tables {
@@ -434,13 +457,16 @@ fn render_osdl(tables: &[String], columns: &[ColumnInfo], indexes: &[IndexInfo])
         }
 
         // Model-level composite indexes (multi-column, or any unique set).
+        // No trailing comment here: the OSDL parser does not accept inline
+        // comments on intent lines, so the emitted schema must round-trip
+        // cleanly through `osdl build`.
         let tbl_indexes: Vec<&IndexInfo> = indexes.iter().filter(|i| i.table == *table).collect();
         for idx in tbl_indexes {
             let fields = idx.columns.to_vec().join(",");
             if idx.unique {
-                writeln!(out, "  -uniq {fields} # {}", idx.name).ok();
+                writeln!(out, "  -uniq {fields}").ok();
             } else {
-                writeln!(out, "  -index {fields} # {}", idx.name).ok();
+                writeln!(out, "  -index {fields}").ok();
             }
         }
     }
@@ -463,7 +489,12 @@ fn is_simple_default(d: &str) -> bool {
         || (t.starts_with('\'') && t.ends_with('\''))
         || matches!(
             t.to_ascii_lowercase().as_str(),
-            "now" | "now()" | "current_timestamp" | "true" | "false" | "uuid_generate_v4()"
+            "now"
+                | "now()"
+                | "current_timestamp"
+                | "true"
+                | "false"
+                | "uuid_generate_v4()"
                 | "gen_random_uuid()"
         )
 }
@@ -472,10 +503,7 @@ fn is_simple_default(d: &str) -> bool {
 /// SQL identifier before interpolating it into a PRAGMA statement, which
 /// cannot take bound parameters. Rejects anything with non-identifier chars.
 fn sanitize_ident(name: &str) -> Result<String, String> {
-    if name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         Ok(name.to_string())
     } else {
         Err(format!("refusing unsafe identifier: {name:?}"))

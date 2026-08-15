@@ -9,13 +9,13 @@
 //! `osdl_parser::parse` then `osdl_core::Validator::validate`. This guarantees
 //! that editor squiggles match `osdl build` / `osdl migrate` exactly.
 
-use async_lsp::{
-    router::Router, ClientSocket, LanguageClient, LanguageServer, MainLoop, ResponseError,
-};
 use async_lsp::lsp_types::{
     self, Diagnostic, DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams,
     InitializeResult, PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind,
+};
+use async_lsp::{
+    ClientSocket, LanguageClient, LanguageServer, MainLoop, ResponseError, router::Router,
 };
 use futures::future::BoxFuture;
 use osdl_core::validator::Validator;
@@ -172,7 +172,10 @@ mod tests {
             !diags.is_empty(),
             "expected a diagnostic for unparseable input"
         );
-        assert_eq!(diags[0].severity, Some(lsp_types::DiagnosticSeverity::ERROR));
+        assert_eq!(
+            diags[0].severity,
+            Some(lsp_types::DiagnosticSeverity::ERROR)
+        );
     }
 
     #[test]
@@ -184,9 +187,10 @@ mod tests {
             !diags.is_empty(),
             "expected a validation diagnostic for unresolved reference"
         );
-        assert!(diags
-            .iter()
-            .any(|d| d.message.contains("reference") || d.message.to_lowercase().contains("unresolved")));
+        assert!(
+            diags.iter().any(|d| d.message.contains("reference")
+                || d.message.to_lowercase().contains("unresolved"))
+        );
     }
 
     #[test]
@@ -211,7 +215,9 @@ mod tests {
             fn frame(json: &str) -> String {
                 format!("Content-Length: {}\r\n\r\n{}", json.len(), json)
             }
-            let init = frame(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#);
+            let init = frame(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#,
+            );
             let uri = "file:///x.osdl";
             let text = "Post\n  id uuid -pk\n  author User.id\n";
             let did_open_json = serde_json::to_string(&serde_json::json!({
