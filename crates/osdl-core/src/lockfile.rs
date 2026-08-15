@@ -118,6 +118,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -129,6 +130,7 @@ mod tests {
             line: 1,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "email".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Uniq],
@@ -178,6 +180,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "status".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Enum],
@@ -209,6 +212,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -220,6 +224,7 @@ mod tests {
             line: 2,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "tenant_id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![],
@@ -231,6 +236,7 @@ mod tests {
             line: 3,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "email".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
@@ -273,6 +279,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -284,6 +291,7 @@ mod tests {
             line: 1,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "posts".into(),
             ty: FieldType::InferredRef("posts".into()),
             intents: vec![Intent::M2m],
@@ -302,6 +310,7 @@ mod tests {
             indexes: vec![],
         };
         post.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],

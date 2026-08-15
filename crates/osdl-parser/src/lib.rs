@@ -39,7 +39,10 @@ enum RawToken {
     Use(String),
     /// A `type Name = base -intents...` declaration (custom value object).
     /// `rhs` holds the parsed RHS tokens (base scalar + intents/check).
-    TypeDecl { name: String, rhs: Vec<RawToken> },
+    TypeDecl {
+        name: String,
+        rhs: Vec<RawToken>,
+    },
     /// A quoted string literal (`"..."`); the inner content (quotes stripped)
     /// is stored verbatim, e.g. `-default ""` yields `Quoted("")`.
     Quoted(String),
@@ -88,12 +91,19 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     for pl in &parsed {
         if pl.indent == 0 {
             if let Some(RawToken::TypeDecl { name, rhs }) = pl.tokens.first() {
-                let ct = custom_type_from_tokens(name, rhs, src, pl.byte_start, pl.byte_end, pl.line_no)?
-                    .ok_or_else(|| {
-                        OsdlError::Parse(ParseError::new(format!(
-                            "invalid custom type declaration for `{name}`"
-                        )))
-                    })?;
+                let ct = custom_type_from_tokens(
+                    name,
+                    rhs,
+                    src,
+                    pl.byte_start,
+                    pl.byte_end,
+                    pl.line_no,
+                )?
+                .ok_or_else(|| {
+                    OsdlError::Parse(ParseError::new(format!(
+                        "invalid custom type declaration for `{name}`"
+                    )))
+                })?;
                 custom_types.insert(name.clone(), ct);
             }
         }
@@ -231,15 +241,23 @@ fn resolve_file(
     sources: &mut Vec<std::path::PathBuf>,
     visited: &mut HashSet<String>,
 ) -> Result<(), OsdlError> {
-    let canon = std::fs::canonicalize(path)
-        .map_err(|e| OsdlError::Io(std::io::Error::other(format!("reading {}: {e}", path.display()))))?;
+    let canon = std::fs::canonicalize(path).map_err(|e| {
+        OsdlError::Io(std::io::Error::other(format!(
+            "reading {}: {e}",
+            path.display()
+        )))
+    })?;
     let key = canon.to_string_lossy().to_string();
     if !visited.insert(key.clone()) {
         return Ok(()); // already merged (cycle guard)
     }
 
-    let src = std::fs::read_to_string(&canon)
-        .map_err(|e| OsdlError::Io(std::io::Error::other(format!("reading {}: {e}", canon.display()))))?;
+    let src = std::fs::read_to_string(&canon).map_err(|e| {
+        OsdlError::Io(std::io::Error::other(format!(
+            "reading {}: {e}",
+            canon.display()
+        )))
+    })?;
     let file_ast = parse_file(&src)?;
 
     // Merge this file's models, detecting collisions.
@@ -247,7 +265,8 @@ fn resolve_file(
         if ast.model_by_name(&model.name).is_some() {
             return Err(OsdlError::Parse(ParseError::new(format!(
                 "duplicate model `{}` (imported via `use` from {})",
-                model.name, canon.display()
+                model.name,
+                canon.display()
             ))));
         }
         ast.add_model(model.clone());
@@ -450,7 +469,7 @@ fn add_field_from_tokens(
                     // base scalar and inherit its intents/check. The field
                     // remains a normal scalar but carries the custom-type name.
                     custom_type = Some(ct.name.clone());
-                    base = Some(ct.base);
+                    ty = Some(FieldType::Scalar(ct.base));
                     for intent in &ct.intents {
                         if !intents.contains(intent) {
                             intents.push(*intent);
@@ -498,6 +517,9 @@ fn add_field_from_tokens(
             }
             RawToken::Name(_) => unreachable!("name only appears as first token"),
             RawToken::Use(_) => unreachable!("use only appears at indent 0, not as a field"),
+            RawToken::TypeDecl { .. } => {
+                unreachable!("type only appears at indent 0, not as a field")
+            }
         }
     }
 
@@ -735,7 +757,8 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                                                             inner.as_str().to_string(),
                                                         )),
                                                         Rule::reference => {
-                                                            let (m, f) = split_reference(inner.as_str());
+                                                            let (m, f) =
+                                                                split_reference(inner.as_str());
                                                             rhs.push(RawToken::Reference {
                                                                 model: m,
                                                                 field: f,
@@ -748,7 +771,9 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                                                             } else {
                                                                 ""
                                                             };
-                                                            rhs.push(RawToken::Quoted(q.to_string()));
+                                                            rhs.push(RawToken::Quoted(
+                                                                q.to_string(),
+                                                            ));
                                                         }
                                                         _ => {}
                                                     }

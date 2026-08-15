@@ -170,6 +170,7 @@ mod tests {
             };
             for (fname, ty, intents) in *fields {
                 m.add_field(Field {
+                    custom_type: None,
                     name: (*fname).to_string(),
                     ty: FieldType::Scalar(*ty),
                     intents: intents.to_vec(),
@@ -228,6 +229,7 @@ mod tests {
             let c = ast.model_by_name("Comment").unwrap();
             let m = &mut ast.models[c];
             m.add_field(Field {
+                custom_type: None,
                 name: "target".into(),
                 ty: FieldType::Scalar(ScalarType::String),
                 intents: vec![Intent::Polymorphic],

@@ -378,6 +378,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -406,6 +407,7 @@ mod tests {
             indexes: vec![],
         };
         a.add_field(Field {
+            custom_type: None,
             name: "name".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
@@ -424,6 +426,7 @@ mod tests {
             indexes: vec![],
         };
         b.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Int),
             intents: vec![Intent::Pk],
@@ -435,6 +438,7 @@ mod tests {
             line: 1,
         });
         b.add_field(Field {
+            custom_type: None,
             name: "z".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],

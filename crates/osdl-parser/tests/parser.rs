@@ -167,7 +167,10 @@ proptest! {
 fn records_use_declarations_single_file() {
     let src = "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n";
     let file = osdl_parser::parse_file(src).unwrap();
-    assert_eq!(file.uses, vec!["user".to_string(), "billing::invoice".to_string()]);
+    assert_eq!(
+        file.uses,
+        vec!["user".to_string(), "billing::invoice".to_string()]
+    );
     // The `use` lines are not modeled.
     assert!(file.ast.model_by_name("user").is_none());
     assert!(file.ast.model_by_name("Order").is_some());
@@ -182,16 +185,8 @@ fn resolves_and_merges_modules_via_use() {
     std::fs::create_dir_all(&billing).unwrap();
     let invoice = billing.join("invoice.osdl");
 
-    std::fs::write(
-        &user_mod,
-        "User\n  id uuid -pk\n  email string -uniq\n",
-    )
-    .unwrap();
-    std::fs::write(
-        &invoice,
-        "Invoice\n  id uuid -pk\n  total int\n",
-    )
-    .unwrap();
+    std::fs::write(&user_mod, "User\n  id uuid -pk\n  email string -uniq\n").unwrap();
+    std::fs::write(&invoice, "Invoice\n  id uuid -pk\n  total int\n").unwrap();
     std::fs::write(
         &dir.join("schema.osdl"),
         "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n  total int\n",
@@ -219,11 +214,7 @@ fn use_detects_duplicate_model_across_files() {
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(&dir.join("a.osdl"), "User\n  id uuid -pk\n").unwrap();
     std::fs::write(&dir.join("b.osdl"), "User\n  id uuid -pk\n").unwrap();
-    std::fs::write(
-        &dir.join("schema.osdl"),
-        "use a\nuse b\n",
-    )
-    .unwrap();
+    std::fs::write(&dir.join("schema.osdl"), "use a\nuse b\n").unwrap();
     let err = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap_err();
     assert!(matches!(err, OsdlError::Parse(_)));
     let _ = std::fs::remove_dir_all(&dir);
