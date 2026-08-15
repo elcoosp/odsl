@@ -3,12 +3,16 @@
 //! Commands:
 //! * `init`   — scaffold a `schema.osdl` + `osdl.lock` in the current project.
 //! * `build`  — parse + validate an `.osdl` file and emit backend code.
-//! * `migrate`— diff the schema against `osdl.lock`, print the plan, and update
-//!   the lockfile.
+//! * `migrate`— diff the schema against `osdl.lock`.
+//!   * `migrate plan [--apply]` — print the plan, optionally update the lockfile.
+//!   * `migrate create` — write migration files (`migrations/*.sql` or SeaORM).
+//!   * `migrate up --db-url …` — apply the plan to a live database.
 
 #![allow(clippy::result_large_err)]
 
 use clap::{Parser, Subcommand};
+use osdl_adapter::migrate::{MigrationFormat, write_migration};
+use osdl_adapter::sql::SqlDialect;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_seaorm::SeaOrmRenderer;
 use osdl_core::Target;
@@ -55,8 +59,18 @@ enum Command {
         #[arg(long, default_value = "src/generated")]
         out: std::path::PathBuf,
     },
-    /// Show and apply migrations against `osdl.lock`.
+    /// Diff the schema against `osdl.lock` and manage migrations.
     Migrate {
+        #[command(subcommand)]
+        action: MigrateAction,
+    },
+}
+
+/// Sub-actions of `osdl migrate`.
+#[derive(Subcommand)]
+enum MigrateAction {
+    /// Print the migration plan (optionally write the lockfile).
+    Plan {
         /// Input `.osdl` file.
         #[arg(default_value = "schema.osdl")]
         input: std::path::PathBuf,
@@ -66,8 +80,31 @@ enum Command {
         /// Write the new lockfile after computing the plan.
         #[arg(long)]
         apply: bool,
-        /// Apply the plan to a live database at this connection URL
-        /// (`sqlite://`, `postgres://`, `mongodb://`). Implies `--apply`.
+    },
+    /// Generate migration files from the schema diff (no DB connection needed).
+    Create {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Target backend (selects the DDL dialect).
+        #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
+        target: Target,
+        /// Output directory for migration files.
+        #[arg(long, default_value = "migrations")]
+        out: std::path::PathBuf,
+        /// Emit SeaORM `up`/`down` Rust modules instead of `.sql`.
+        #[arg(long)]
+        sea_orm: bool,
+    },
+    /// Apply the plan to a live database at `--db-url` (implies writing the lockfile).
+    Up {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Target backend (affects validation only).
+        #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
+        target: Target,
+        /// Database connection URL (`sqlite://`, `postgres://`, `mongodb://`).
         #[arg(long)]
         db_url: Option<String>,
     },
@@ -80,12 +117,24 @@ fn main() -> Result<(), OsdlError> {
     match cli.command {
         Command::Init { path } => cmd_init(&path),
         Command::Build { input, target, out } => cmd_build(&input, target, &out),
-        Command::Migrate {
-            input,
-            target,
-            apply,
-            db_url,
-        } => cmd_migrate(&input, target, apply, db_url),
+        Command::Migrate { action } => match action {
+            MigrateAction::Plan {
+                input,
+                target,
+                apply,
+            } => cmd_migrate_plan(&input, target, apply),
+            MigrateAction::Create {
+                input,
+                target,
+                out,
+                sea_orm,
+            } => cmd_migrate_create(&input, target, &out, sea_orm),
+            MigrateAction::Up {
+                input,
+                target,
+                db_url,
+            } => cmd_migrate_up(&input, target, db_url),
+        },
     }
 }
 
@@ -151,10 +200,32 @@ fn cmd_build(
     Ok(())
 }
 
-fn cmd_migrate(
+fn cmd_migrate_plan(input: &std::path::Path, target: Target, apply: bool) -> Result<(), OsdlError> {
+    let ast = load_ast(input, target)?;
+    let lock_path = input.with_file_name("osdl.lock");
+    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        version: Lockfile::VERSION,
+        checksum: String::new(),
+        models: vec![],
+    });
+    let plan = plan_migration(&current, &ast)?;
+    for line in plan.describe() {
+        println!("  {line}");
+    }
+    if plan.ops.is_empty() {
+        println!("no changes");
+    }
+    if apply {
+        write_lockfile(&lock_path, &Lockfile::from_ast(&ast))?;
+        tracing::info!(lock = %lock_path.display(), "lockfile updated");
+        println!("updated {}", lock_path.display());
+    }
+    Ok(())
+}
+
+fn cmd_migrate_up(
     input: &std::path::Path,
     target: Target,
-    apply: bool,
     db_url: Option<String>,
 ) -> Result<(), OsdlError> {
     let ast = load_ast(input, target)?;
@@ -169,7 +240,6 @@ fn cmd_migrate(
         println!("  {line}");
     }
 
-    let do_apply = apply || db_url.is_some();
     if plan.ops.is_empty() {
         println!("no changes");
     }
@@ -188,13 +258,56 @@ fn cmd_migrate(
         for stmt in &statements {
             println!("  applied: {stmt}");
         }
-        println!("applied {} change(s) to {}", statements.len(), url);
+        println!("applied {} change(s) to {url}", statements.len());
     }
 
-    if do_apply {
-        write_lockfile(&lock_path, &Lockfile::from_ast(&ast))?;
-        tracing::info!(lock = %lock_path.display(), "lockfile updated");
-        println!("updated {}", lock_path.display());
-    }
+    // `up` always records the new baseline lockfile.
+    write_lockfile(&lock_path, &Lockfile::from_ast(&ast))?;
+    tracing::info!(lock = %lock_path.display(), "lockfile updated");
+    println!("updated {}", lock_path.display());
     Ok(())
+}
+
+fn cmd_migrate_create(
+    input: &std::path::Path,
+    target: Target,
+    out: &std::path::Path,
+    sea_orm: bool,
+) -> Result<(), OsdlError> {
+    let ast = load_ast(input, target)?;
+    let lock_path = input.with_file_name("osdl.lock");
+    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        version: Lockfile::VERSION,
+        checksum: String::new(),
+        models: vec![],
+    });
+    let plan = plan_migration(&current, &ast)?;
+    for line in plan.describe() {
+        println!("  {line}");
+    }
+    if plan.ops.is_empty() {
+        println!("no changes; nothing to generate");
+        return Ok(());
+    }
+    let dialect = match target {
+        Target::SeaOrmPostgres => SqlDialect::Postgres,
+        _ => SqlDialect::Sqlite,
+    };
+    let format = if sea_orm {
+        MigrationFormat::SeaOrm
+    } else {
+        MigrationFormat::Sql
+    };
+    let written = write_migration(out, format, dialect, &plan, &Lockfile::from_ast(&ast))
+        .map_err(|e| OsdlError::Io(format!("writing migration: {e}")))?;
+    match written {
+        Some(name) => {
+            println!("generated {}/{}", out.display(), name);
+            Ok(())
+        }
+        None => {
+            println!("no migration file written");
+            Ok(())
+        }
+    }
 }

@@ -14,6 +14,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod error;
+pub mod migrate;
 pub mod mongo;
 pub mod naming;
 pub mod sql;
