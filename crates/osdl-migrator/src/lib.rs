@@ -11,10 +11,10 @@
 
 #![allow(clippy::result_large_err)]
 
+use osdl_core::Target;
 use osdl_core::ast::{Ast, LockField, LockModel};
 use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
-use osdl_core::Target;
 use std::collections::BTreeMap;
 
 /// A single, backend-agnostic schema change.
@@ -148,11 +148,7 @@ impl MigrationPlan {
                 } => {
                     // Postgres/MySQL: adding a non-nullable column without a
                     // default rewrites the whole table (long lock on big tables).
-                    if !*nullable
-                        && matches!(
-                            target,
-                            Target::SeaOrmPostgres | Target::SeaOrmMysql
-                        )
+                    if !*nullable && matches!(target, Target::SeaOrmPostgres | Target::SeaOrmMysql)
                     {
                         out.push((
                             i,

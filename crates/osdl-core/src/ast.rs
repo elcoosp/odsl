@@ -196,10 +196,8 @@ impl Ast {
                         }
                         // Encode polymorphic targets the same way.
                         if !f.polymorphic_targets.is_empty() {
-                            intents.push(format!(
-                                "-polymorphic {}",
-                                f.polymorphic_targets.join(",")
-                            ));
+                            intents
+                                .push(format!("-polymorphic {}", f.polymorphic_targets.join(",")));
                         }
                         LockField {
                             name: f.name.clone(),

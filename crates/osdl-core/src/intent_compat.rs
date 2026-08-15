@@ -73,7 +73,6 @@ impl FromStr for Target {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr as _;
     #[test]
     fn parse_round_trip() {
         assert_eq!(

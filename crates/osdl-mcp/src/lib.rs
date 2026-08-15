@@ -20,7 +20,7 @@
 use osdl_core::Target;
 use osdl_core::validator::CodeRenderer;
 use osdl_parser::parse;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::str::FromStr as _;
 
 /// Run the MCP server, reading newline-delimited JSON-RPC requests from stdin
@@ -34,7 +34,11 @@ pub fn run_stdio() -> std::io::Result<()> {
         let stdout = tokio::io::stdout();
         let mut reader = BufReader::new(stdin).lines();
         let mut out = stdout;
-        while let Some(line) = reader.next_line().await.map_err(|e| std::io::Error::other(e.to_string()))? {
+        while let Some(line) = reader
+            .next_line()
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))?
+        {
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -45,7 +49,9 @@ pub fn run_stdio() -> std::io::Result<()> {
             out.write_all(format!("{serialized}\n").as_bytes())
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
-            out.flush().await.map_err(|e| std::io::Error::other(e.to_string()))?;
+            out.flush()
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
         }
         Ok(())
     })
@@ -177,7 +183,9 @@ fn dispatch_tool(name: &str, args: &Value) -> Value {
 }
 
 fn arg_path(args: &Value) -> Option<String> {
-    args.get("path").and_then(|p| p.as_str()).map(|s| s.to_string())
+    args.get("path")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string())
 }
 
 fn parse_target(args: &Value) -> Target {
@@ -225,7 +233,9 @@ fn tool_validate_schema(args: &Value) -> Value {
     };
     let ast = match parse(&src) {
         Ok(a) => a,
-        Err(e) => return json!({ "valid": false, "diagnostics": [ { "severity": "error", "message": format!("{e}") } ] }),
+        Err(e) => {
+            return json!({ "valid": false, "diagnostics": [ { "severity": "error", "message": format!("{e}") } ] });
+        }
     };
     match osdl_core::Validator::validate(&ast, Some(parse_target(args))) {
         Ok(()) => json!({ "valid": true, "diagnostics": [] }),
@@ -310,10 +320,7 @@ mod tests {
         let tools = tools_list();
         assert!(!tools.is_empty());
         assert!(tools.iter().all(|t| t.get("name").is_some()));
-        let names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"read_schema"));
         assert!(names.contains(&"validate_schema"));
         assert!(names.contains(&"format_schema"));

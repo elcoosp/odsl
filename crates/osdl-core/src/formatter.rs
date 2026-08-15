@@ -191,7 +191,10 @@ mod tests {
         let ast = build(&[
             (
                 "Post",
-                &[("title", ScalarType::String, &[]), ("id", ScalarType::Uuid, &[Intent::Pk])],
+                &[
+                    ("title", ScalarType::String, &[]),
+                    ("id", ScalarType::Uuid, &[Intent::Pk]),
+                ],
             ),
             (
                 "User",
@@ -202,7 +205,8 @@ mod tests {
             ),
         ]);
         let out = format_ast(&ast);
-                let expected = "Post\n  id uuid -pk\n  title string\n\nUser\n  id uuid -pk\n  email string -uniq\n";
+        let expected =
+            "Post\n  id uuid -pk\n  title string\n\nUser\n  id uuid -pk\n  email string -uniq\n";
         assert_eq!(out, expected, "got:\n{out}");
     }
 
@@ -211,7 +215,10 @@ mod tests {
         let mut ast = build(&[
             (
                 "Comment",
-                &[("id", ScalarType::Uuid, &[Intent::Pk]), ("age", ScalarType::Int, &[])],
+                &[
+                    ("id", ScalarType::Uuid, &[Intent::Pk]),
+                    ("age", ScalarType::Int, &[]),
+                ],
             ),
             ("Video", &[("id", ScalarType::Uuid, &[Intent::Pk])]),
             ("Post", &[("id", ScalarType::Uuid, &[Intent::Pk])]),

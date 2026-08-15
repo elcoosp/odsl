@@ -7,11 +7,11 @@
 
 #![allow(clippy::result_large_err)]
 
+use osdl_core::Target;
 use osdl_core::ast::{Ast, Field, Model};
 use osdl_core::errors::OsdlError;
 use osdl_core::types::{FieldType, Intent, ScalarType};
 use osdl_core::validator::CodeRenderer;
-use osdl_core::Target;
 
 /// The GraphQL renderer.
 pub struct GraphQLRenderer {
@@ -107,7 +107,16 @@ fn render_type(model: &Model) -> String {
         if let Some(expr) = &f.check_expr {
             directives.push(format!("@constraint(expression: \"{expr}\")"));
         }
-        lines.push(format!("  {name}: {ty}{dirs}", name = f.name, ty = ty, dirs = if directives.is_empty() { String::new() } else { format!(" {}", directives.join(" ")) }));
+        lines.push(format!(
+            "  {name}: {ty}{dirs}",
+            name = f.name,
+            ty = ty,
+            dirs = if directives.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", directives.join(" "))
+            }
+        ));
     }
 
     lines.push("}".to_string());
@@ -143,7 +152,7 @@ mod tests {
     fn emits_type_with_nonnull() {
         let src = "User\n  id uuid -pk\n  email string -uniq\n  age int -null\n";
         let out = render(src);
-        assert!(out.contains("type User {"));  
+        assert!(out.contains("type User {"));
         assert!(out.contains("id: ID! @id"));
         assert!(out.contains("email: String! @unique"));
         assert!(out.contains("age: Int"));
@@ -153,6 +162,9 @@ mod tests {
     fn reference_is_object_type() {
         let src = "Post\n  id uuid -pk\n  author User.id\nUser\n  id uuid -pk\n";
         let out = render(src);
-        assert!(out.contains("author: User!") || out.contains("author: User"), "got: {out}");
+        assert!(
+            out.contains("author: User!") || out.contains("author: User"),
+            "got: {out}"
+        );
     }
 }

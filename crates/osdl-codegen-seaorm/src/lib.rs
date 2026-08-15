@@ -603,12 +603,13 @@ mod tests {
         // virtual field present but NOT as a sea_orm column (no attribute).
         assert!(user_rs.contains("pub display: String"));
         // A virtual field must not carry a generated `#[sea_orm(...)]` attribute.
-        let display_has_no_attr = user_rs
-            .lines()
-            .collect::<Vec<_>>()
-            .windows(2)
-            .any(|w| w[1].trim_start().starts_with("pub display") && !w[0].trim_start().starts_with("#["));
-        assert!(display_has_no_attr, "display should have no sea_orm attribute");
+        let display_has_no_attr = user_rs.lines().collect::<Vec<_>>().windows(2).any(|w| {
+            w[1].trim_start().starts_with("pub display") && !w[0].trim_start().starts_with("#[")
+        });
+        assert!(
+            display_has_no_attr,
+            "display should have no sea_orm attribute"
+        );
         // check expr surfaced as a doc comment.
         assert!(user_rs.contains("age >= 18"));
         // soft-delete column is nullable.

@@ -12,8 +12,8 @@
 use async_lsp::lsp_types::{
     self, Diagnostic, DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, Location, MarkupContent, MarkupKind, PublishDiagnosticsParams,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    InitializeParams, InitializeResult, Location, MarkupContent, MarkupKind,
+    PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 use async_lsp::{
     ClientSocket, LanguageClient, LanguageServer, MainLoop, ResponseError, router::Router,
@@ -227,7 +227,10 @@ impl LanguageServer for Backend {
         ControlFlow::Continue(())
     }
 
-    fn hover(&mut self, params: HoverParams) -> BoxFuture<'static, std::result::Result<Option<Hover>, Self::Error>> {
+    fn hover(
+        &mut self,
+        params: HoverParams,
+    ) -> BoxFuture<'static, std::result::Result<Option<Hover>, Self::Error>> {
         // Clone the document text (owned) so the future is 'static and does not
         // borrow `&self`.
         let uri = params.text_document_position_params.text_document.uri;
@@ -259,7 +262,11 @@ impl LanguageServer for Backend {
         &mut self,
         params: GotoDefinitionParams,
     ) -> BoxFuture<'static, std::result::Result<Option<GotoDefinitionResponse>, Self::Error>> {
-        let uri = params.text_document_position_params.text_document.uri.clone();
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .clone();
         let pos = params.text_document_position_params.position;
         let text = self.docs.get(&uri.to_string()).cloned();
         Box::pin(async move {
@@ -454,8 +461,14 @@ mod tests {
             .map(|(_, f)| f.clone())
             .unwrap();
         let hover = Backend::hover_for_field(&age);
-        assert!(hover.contains("`i32`"), "hover should show Rust type: {hover}");
-        assert!(hover.contains("CHECK (age >= 18)"), "hover should show SQL check: {hover}");
+        assert!(
+            hover.contains("`i32`"),
+            "hover should show Rust type: {hover}"
+        );
+        assert!(
+            hover.contains("CHECK (age >= 18)"),
+            "hover should show SQL check: {hover}"
+        );
 
         let bio = ast
             .models()
@@ -464,7 +477,10 @@ mod tests {
             .map(|(_, f)| f.clone())
             .unwrap();
         let bio_hover = Backend::hover_for_field(&bio);
-        assert!(bio_hover.contains("Option<String>"), "nullable -> Option: {bio_hover}");
+        assert!(
+            bio_hover.contains("Option<String>"),
+            "nullable -> Option: {bio_hover}"
+        );
     }
 
     #[test]

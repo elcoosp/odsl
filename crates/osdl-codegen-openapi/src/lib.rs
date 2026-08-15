@@ -8,12 +8,12 @@
 
 #![allow(clippy::result_large_err)]
 
+use osdl_core::Target;
 use osdl_core::ast::{Ast, Field, Model};
 use osdl_core::errors::OsdlError;
 use osdl_core::types::{FieldType, Intent, ScalarType};
 use osdl_core::validator::CodeRenderer;
-use osdl_core::Target;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The OpenAPI renderer.
 pub struct OpenApiRenderer {
@@ -116,7 +116,10 @@ fn build_schema(model: &Model) -> Value {
                 format!("{}_type", to_snake(&f.name)),
                 json!({ "type": "string", "x-polymorphic": f.polymorphic_targets }),
             );
-            props.insert(format!("{}_id", to_snake(&f.name)), json!({ "type": "string", "format": "uuid" }));
+            props.insert(
+                format!("{}_id", to_snake(&f.name)),
+                json!({ "type": "string", "format": "uuid" }),
+            );
             required.push(format!("{}_type", to_snake(&f.name)));
             required.push(format!("{}_id", to_snake(&f.name)));
             continue;

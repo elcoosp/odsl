@@ -118,9 +118,7 @@ impl Validator {
                         }));
                     }
                     // `-check "expr"` requires a scalar field and a non-empty expression.
-                    if *intent == Intent::Check
-                        && !matches!(field.ty, FieldType::Scalar(_))
-                    {
+                    if *intent == Intent::Check && !matches!(field.ty, FieldType::Scalar(_)) {
                         return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
                             intent: "-check".into(),
                             ty: field.type_keyword(),
@@ -167,15 +165,13 @@ impl Validator {
                             Intent::SoftDelete,
                         ] {
                             if field.has(db_intent) {
-                                return Err(OsdlError::compile(
-                                    CompileErrorKind::TypeMismatch {
-                                        intent: intent.as_keyword().to_string(),
-                                        ty: format!(
-                                            "cannot combine -virtual with {}",
-                                            db_intent.as_keyword()
-                                        ),
-                                    },
-                                ));
+                                return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                                    intent: intent.as_keyword().to_string(),
+                                    ty: format!(
+                                        "cannot combine -virtual with {}",
+                                        db_intent.as_keyword()
+                                    ),
+                                }));
                             }
                         }
                     }
@@ -352,23 +348,28 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
     use Target::*;
     match (target, intent) {
         // SQL backends support these intents natively.
-        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual | SoftDelete | Check | Polymorphic) => {
-            true
-        }
+        (
+            SeaOrmSqlite,
+            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual
+            | SoftDelete | Check | Polymorphic,
+        ) => true,
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
         (
             SeaOrmPostgres | SeaOrmMysql,
-            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual | SoftDelete | Check | Polymorphic,
+            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual
+            | SoftDelete | Check | Polymorphic,
         ) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
         (SeaOrmMysql, Fulltext) => true,      // MySQL FULLTEXT index
         (SeaOrmMysql, Partition) => false,    // partition requires table-level DDL here
         // Mongo supports these natively.
-        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m | Virtual | SoftDelete | Check | Polymorphic) => {
-            true
-        }
+        (
+            Mongo,
+            Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m | Virtual
+            | SoftDelete | Check | Polymorphic,
+        ) => true,
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index
         // Transpile targets (TS / GraphQL / OpenAPI) describe types only and

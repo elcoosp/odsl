@@ -13,17 +13,17 @@
 use clap::{Parser, Subcommand};
 use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
+use osdl_codegen_graphql::GraphQLRenderer;
 use osdl_codegen_mongo::MongoRenderer;
+use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_codegen_seaorm::SeaOrmRenderer;
 use osdl_codegen_typescript::TypeScriptRenderer;
-use osdl_codegen_graphql::GraphQLRenderer;
-use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_core::Target;
 use osdl_core::ast::Ast;
 use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
 use osdl_core::validator::CodeRenderer;
-use osdl_migrator::{plan_migration, read_lockfile, write_lockfile, MigrationPlan};
+use osdl_migrator::{MigrationPlan, plan_migration, read_lockfile, write_lockfile};
 use osdl_parser::parse;
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
@@ -654,8 +654,14 @@ fn cmd_migrate_status(
             .block_on(applied.applied_migrations())
             .map_err(|e| io_err(format!("history read: {e}")))?;
         println!("=== live database ({url}) ===");
-        if applied_migrations.iter().any(|n| n == &target_lock.checksum) {
-            println!("  schema checksum {chk} is applied", chk = &target_lock.checksum);
+        if applied_migrations
+            .iter()
+            .any(|n| n == &target_lock.checksum)
+        {
+            println!(
+                "  schema checksum {chk} is applied",
+                chk = &target_lock.checksum
+            );
         } else {
             println!(
                 "  schema checksum {chk} NOT applied (database is behind or diverged)",
