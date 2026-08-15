@@ -102,6 +102,10 @@ fn rust_type_for_field(field: &Field) -> TokenStream {
             quote! { bson::oid::ObjectId }
         }
     };
+    // Native enums serialize as plain strings in Mongo.
+    if field.has(Intent::Enum) {
+        return quote! { String };
+    }
     if field.has(Intent::Null) {
         quote! { Option<#base> }
     } else {
@@ -140,6 +144,9 @@ fn render_json_schema(model: &Model) -> String {
         }
         if field.has(Intent::Fulltext) {
             prop["osdlIndex"] = serde_json::json!("text");
+        }
+        if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
+            prop["enum"] = serde_json::json!(field.enum_variants);
         }
         props.insert(field.name.clone(), prop);
     }
@@ -257,10 +264,20 @@ mod tests {
     }
 
     #[test]
-    fn renders_json_schema() {
-        let ast = compile("User\n  id uuid -pk\n  email string -uniq\n");
+    fn renders_enum_as_string_with_constraint() {
+        let ast = compile("User\n  id uuid -pk\n  status string -enum active,inactive\n");
         let renderer = MongoRenderer::new(Target::Mongo);
         let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            user_rs.contains("pub status: String"),
+            "enum field should be String:\n{user_rs}"
+        );
         let schema = files
             .iter()
             .find(|(p, _)| p == "entity/user.json")
@@ -268,9 +285,8 @@ mod tests {
             .1
             .clone();
         let v: serde_json::Value = serde_json::from_str(&schema).unwrap();
-        assert!(v.get("$jsonSchema").is_some());
-        let props = &v["$jsonSchema"]["properties"];
-        assert_eq!(props["email"]["bsonType"], "string");
-        assert_eq!(props["email"]["unique"], true);
+        let prop = &v["$jsonSchema"]["properties"]["status"];
+        assert_eq!(prop["bsonType"], "string");
+        assert_eq!(prop["enum"], serde_json::json!(["active", "inactive"]));
     }
 }

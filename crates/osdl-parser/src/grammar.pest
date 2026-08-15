@@ -37,7 +37,9 @@ sp      = _{ " " }
 flag    = @{ "-" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 // A cross-model reference: Model.field (the '.' is the only operator).
 reference = @{ ident ~ "." ~ ident }
-word    = @{ ident_char+ }
+// `word` carries type names, relation targets, and `-enum` value lists
+// (which may contain commas, e.g. `active,inactive`).
+word    = @{ (ident_char | ",")+ }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident      = @{ ident_char+ }

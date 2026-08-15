@@ -84,6 +84,8 @@ pub struct Field {
     pub name: String,
     pub ty: FieldType,
     pub intents: Vec<Intent>,
+    /// Closed value set when the field is a native enum (`-enum a,b`).
+    pub enum_variants: Vec<String>,
     pub line: usize,
 }
 
@@ -117,6 +119,8 @@ pub struct LockField {
     pub name: String,
     pub ty: String,
     pub intents: Vec<String>,
+    /// Closed value set for native enums (`-enum a,b`); empty otherwise.
+    pub enum_variants: Vec<String>,
 }
 
 impl LockModel {
@@ -136,14 +140,19 @@ impl Ast {
                 let mut fields: Vec<LockField> = m
                     .fields
                     .iter()
-                    .map(|(_, f)| LockField {
-                        name: f.name.clone(),
-                        ty: f.type_keyword(),
-                        intents: f
-                            .intents
-                            .iter()
-                            .map(|i| i.as_keyword().to_string())
-                            .collect(),
+                    .map(|(_, f)| {
+                        let mut variants = f.enum_variants.clone();
+                        variants.sort();
+                        LockField {
+                            name: f.name.clone(),
+                            ty: f.type_keyword(),
+                            intents: f
+                                .intents
+                                .iter()
+                                .map(|i| i.as_keyword().to_string())
+                                .collect(),
+                            enum_variants: variants,
+                        }
                     })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -181,6 +190,7 @@ mod tests {
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
+            enum_variants: vec![],
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -203,6 +213,7 @@ mod tests {
             name: "name".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
+            enum_variants: vec![],
             line: 1,
         });
         let mut b = Model {
@@ -215,12 +226,14 @@ mod tests {
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Int),
             intents: vec![Intent::Pk],
+            enum_variants: vec![],
             line: 1,
         });
         b.add_field(Field {
             name: "z".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
+            enum_variants: vec![],
             line: 2,
         });
         ast.add_model(a);

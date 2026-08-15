@@ -103,6 +103,8 @@ pub enum Intent {
     Auto,
     /// Relationship to another model (1:N / N:1 helper).
     Relation,
+    /// Closed set of string values (native enum).
+    Enum,
 }
 
 impl Intent {
@@ -117,6 +119,7 @@ impl Intent {
             Intent::Tz => "-tz",
             Intent::Auto => "-auto",
             Intent::Relation => "-relation",
+            Intent::Enum => "-enum",
         }
     }
 }

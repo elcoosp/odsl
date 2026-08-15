@@ -79,6 +79,17 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         name: name.to_string(),
         ty: ty.to_string(),
         intents: intents.iter().map(|s| s.to_string()).collect(),
+        enum_variants: vec![],
+    }
+}
+
+/// Build a lock field that carries native-enum variants.
+pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]) -> LockField {
+    LockField {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        intents: intents.iter().map(|s| s.to_string()).collect(),
+        enum_variants: variants.iter().map(|s| s.to_string()).collect(),
     }
 }
 
@@ -101,12 +112,14 @@ mod tests {
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
+            enum_variants: vec![],
             line: 1,
         });
         user.add_field(Field {
             name: "email".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Uniq],
+            enum_variants: vec![],
             line: 2,
         });
         ast.add_model(user);
@@ -134,5 +147,31 @@ mod tests {
         let f = lock_field("name", "string", &["-uniq"]);
         assert_eq!(f.name, "name");
         assert_eq!(f.intents, vec!["-uniq".to_string()]);
+    }
+
+    #[test]
+    fn enum_variants_survive_lockfile_round_trip() {
+        use crate::ast::{Ast, Field, Model};
+        let mut ast = Ast::new();
+        let mut user = Model {
+            name: "User".into(),
+            fields: Arena::new(),
+            field_index: vec![],
+            line: 1,
+        };
+        user.add_field(Field {
+            name: "status".into(),
+            ty: FieldType::Scalar(ScalarType::String),
+            intents: vec![Intent::Enum],
+            enum_variants: vec!["active".into(), "inactive".into()],
+            line: 2,
+        });
+        ast.add_model(user);
+        let lf = Lockfile::from_ast(&ast);
+        let text = lf.to_string_pretty().unwrap();
+        let parsed = Lockfile::from_str(&text).unwrap();
+        assert_eq!(lf, parsed);
+        let got = &parsed.models[0].fields[0].enum_variants;
+        assert_eq!(got, &vec!["active".to_string(), "inactive".to_string()]);
     }
 }

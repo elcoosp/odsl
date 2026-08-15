@@ -162,7 +162,7 @@ fn load_ast(input: &std::path::Path, target: Target) -> Result<Ast, OsdlError> {
 /// Build an [`OsdlError::Io`] from an ad-hoc message (e.g. a guard condition
 /// that is not a real `std::io::Error`). Real IO results propagate via `?`.
 fn io_err(msg: impl Into<String>) -> OsdlError {
-    OsdlError::Io(std::io::Error::new(std::io::ErrorKind::Other, msg.into()))
+    OsdlError::Io(std::io::Error::other(msg.into()))
 }
 
 fn cmd_init(path: &std::path::Path) -> Result<(), OsdlError> {

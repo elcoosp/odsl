@@ -85,6 +85,21 @@ impl Validator {
                             ty: field.type_keyword(),
                         }));
                     }
+                    // An enum must be a string field with at least one variant.
+                    if *intent == Intent::Enum
+                        && !matches!(field.ty, FieldType::Scalar(ScalarType::String))
+                    {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-enum".into(),
+                            ty: field.type_keyword(),
+                        }));
+                    }
+                    if *intent == Intent::Enum && field.enum_variants.is_empty() {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-enum".into(),
+                            ty: "requires at least one variant".into(),
+                        }));
+                    }
                 }
             }
         }
@@ -201,7 +216,7 @@ fn dfs(
 fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
     use Intent::*;
     match intent {
-        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index => true,
+        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index | Enum => true,
         Fulltext => {
             // Full-text search only makes sense on textual types.
             matches!(ty, FieldType::Scalar(ScalarType::String))
@@ -216,14 +231,14 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
     use Target::*;
     match (target, intent) {
         // SQL backends support these intents natively.
-        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index) => true,
+        (SeaOrmSqlite, Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum) => true,
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
-        (SeaOrmPostgres, Pk | Uniq | Null | Auto | Tz | Relation | Index) => true,
+        (SeaOrmPostgres, Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
         // Mongo supports these natively.
-        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index) => true,
+        (Mongo, Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum) => true,
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index
     }

@@ -50,8 +50,12 @@ fn render_model(model: &Model, target: Target) -> Result<String, OsdlError> {
     let table_name = to_snake_plural(&model.name);
 
     let mut field_defs: Vec<TokenStream> = Vec::new();
+    let mut enum_defs: Vec<TokenStream> = Vec::new();
     for (_fidx, field) in model.fields() {
         field_defs.push(render_field(field, target));
+        if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
+            enum_defs.push(render_active_enum(field));
+        }
     }
 
     let tokens = quote! {
@@ -65,6 +69,8 @@ fn render_model(model: &Model, target: Target) -> Result<String, OsdlError> {
         }
 
         impl ActiveModelBehavior for ActiveModel {}
+
+        #(#enum_defs)*
     };
 
     Ok(format_tokens(tokens))
@@ -121,6 +127,18 @@ fn render_field(field: &Field, _target: Target) -> TokenStream {
     }
     if field.has(Intent::Uniq) {
         attrs.push(quote! { #[sea_orm(unique)] });
+    }
+
+    // Native enum: emit an ActiveEnum-backed column.
+    if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
+        let enum_ident =
+            syn::Ident::new(&to_pascal_case(&field.name), proc_macro2::Span::call_site());
+        let col_ty = enum_ident.clone();
+        return quote! {
+            #(#attrs)*
+            #[sea_orm(active_enum = #enum_ident)]
+            pub #name: #col_ty,
+        };
     }
 
     quote! {
@@ -207,6 +225,48 @@ fn scalar_rust_type(s: ScalarType, nullable: bool) -> TokenStream {
     } else {
         base
     }
+}
+
+/// Generate a SeaORM `ActiveEnum` struct for a `-enum` field.
+fn render_active_enum(field: &Field) -> TokenStream {
+    let enum_ident = syn::Ident::new(&to_pascal_case(&field.name), proc_macro2::Span::call_site());
+    let variants: Vec<TokenStream> = field
+        .enum_variants
+        .iter()
+        .map(|v| {
+            let v_ident = syn::Ident::new(&to_pascal_case(v), proc_macro2::Span::call_site());
+            quote! { #v_ident }
+        })
+        .collect();
+    quote! {
+        #[derive(Debug, Clone, PartialEq, Eq, EnumIter, ActiveEnum)]
+        #[sea_orm(rs_type = "String", db_type = "Text", rename_all = "snake_case")]
+        pub enum #enum_ident {
+            #(#variants),*
+        }
+    }
+}
+
+/// `status` -> `Status`, `order_status` -> `OrderStatus`.
+fn to_pascal_case(s: &str) -> String {
+    let mut out = String::new();
+    let mut upper = true;
+    for c in s.chars() {
+        if c == '_' || c == '-' || c == ' ' {
+            upper = true;
+            continue;
+        }
+        if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    if out.is_empty() {
+        out.push('X');
+    }
+    out
 }
 
 fn field_reference(field: &Field) -> Option<Reference> {
@@ -314,8 +374,8 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_user_entity() {
-        let ast = compile("User\n  id uuid -pk\n  email string -uniq\n  age int -null\n");
+    fn renders_active_enum_field() {
+        let ast = compile("User\n  id uuid -pk\n  status string -enum active,inactive,pending\n");
         let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
         let files = renderer.render(&ast).unwrap();
         let user_rs = files
@@ -324,6 +384,18 @@ mod tests {
             .unwrap()
             .1
             .clone();
-        insta::assert_snapshot!(user_rs);
+        assert!(
+            user_rs.contains("active_enum = Status"),
+            "enum column attr missing:\n{user_rs}"
+        );
+        assert!(
+            user_rs.contains("pub status: Status"),
+            "enum column type missing"
+        );
+        assert!(user_rs.contains("#[derive(Debug, Clone, PartialEq, Eq, EnumIter, ActiveEnum)]"));
+        assert!(user_rs.contains("pub enum Status {"));
+        assert!(user_rs.contains("Active"));
+        assert!(user_rs.contains("Inactive"));
+        assert!(user_rs.contains("Pending"));
     }
 }

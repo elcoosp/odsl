@@ -159,10 +159,18 @@ fn add_field_from_tokens(
 
     let mut ty: Option<FieldType> = None;
     let mut intents: Vec<Intent> = Vec::new();
+    let mut enum_variants: Vec<String> = Vec::new();
+    let mut capturing_enum = false;
 
     for tok in iter {
         match tok {
             RawToken::Flag(f) => {
+                if f == "-enum" {
+                    // The variants follow as a separate word token (e.g. `a,b`).
+                    intents.push(Intent::Enum);
+                    capturing_enum = true;
+                    continue;
+                }
                 let intent = parse_intent(f).ok_or_else(|| {
                     OsdlError::Parse(
                         ParseError::new(format!("unknown intent flag `{f}`"))
@@ -181,6 +189,11 @@ fn add_field_from_tokens(
                 }));
             }
             RawToken::Word(w) => {
+                if capturing_enum {
+                    capturing_enum = false;
+                    enum_variants = w.split(',').map(|s| s.trim().to_string()).collect();
+                    continue;
+                }
                 if let Some(target) = w.strip_prefix("relation:") {
                     intents.push(Intent::Relation);
                     ty = Some(FieldType::InferredRef(format!("relation:{target}")));
@@ -208,6 +221,7 @@ fn add_field_from_tokens(
         name,
         ty,
         intents,
+        enum_variants,
         line: line_no,
     });
     Ok(())
@@ -224,6 +238,7 @@ fn parse_intent(flag: &str) -> Option<Intent> {
         "-tz" | "-timezone" => Some(Intent::Tz),
         "-auto" | "-autoincrement" => Some(Intent::Auto),
         "-relation" => Some(Intent::Relation),
+        "-enum" => Some(Intent::Enum),
         _ => None,
     }
 }
@@ -312,5 +327,29 @@ fn span_at(_src: &str, start: usize, end: usize, line: usize) -> Span {
         end,
         line,
         column: 1,
+    }
+}
+
+#[cfg(test)]
+mod enum_tests {
+    use super::*;
+    use osdl_core::types::Intent;
+
+    #[test]
+    fn parses_enum_variants() {
+        let src = "User\n  id uuid -pk\n  status string -enum active,inactive,pending\n";
+        let ast = parse(src).unwrap();
+        let midx = ast.model_by_name("User").unwrap();
+        let m = &ast.models[midx];
+        let f = m.fields().find(|(_, fl)| fl.name == "status").unwrap().1;
+        assert!(f.has(Intent::Enum));
+        assert_eq!(
+            f.enum_variants,
+            vec![
+                "active".to_string(),
+                "inactive".to_string(),
+                "pending".to_string()
+            ]
+        );
     }
 }
