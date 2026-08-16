@@ -3194,6 +3194,7 @@ dependencies = [
 name = "osdl-mcp"
 version = "0.1.0"
 dependencies = [
+ "osdl-adapter",
  "osdl-codegen-graphql",
  "osdl-codegen-jsonschema",
  "osdl-codegen-mongo",
@@ -3203,6 +3204,7 @@ dependencies = [
  "osdl-codegen-ts-validators",
  "osdl-codegen-typescript",
  "osdl-core",
+ "osdl-migrator",
  "osdl-parser",
  "serde",
  "serde_json",

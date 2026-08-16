@@ -959,6 +959,13 @@ fn cmd_migrate_test(
     if let Err(mismatch) = ast.schema_matches(&live_up_ast) {
         return Err(io_err(format!("up schema mismatch: {mismatch}")));
     }
+    // Strict mode additionally compares column types: a silent type change
+    // (e.g. `int` -> `bigint`) would pass the structural check above but is a
+    // real drift. Surface it as a non-fatal warning (the live DB already
+    // matches structurally, so we don't fail the test on type-only drift).
+    if let Err(drift) = ast.schema_matches_strict(&live_up_ast) {
+        eprintln!("⚠ schema type drift detected: {drift}");
+    }
     println!("✓ up: live database matches the target schema");
 
     if up_only {

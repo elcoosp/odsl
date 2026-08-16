@@ -8,6 +8,8 @@ authors.workspace = true
 [dependencies]
 osdl-core = { workspace = true }
 osdl-parser = { workspace = true }
+osdl-migrator = { workspace = true }
+osdl-adapter = { workspace = true }
 osdl-codegen-seaorm = { workspace = true }
 osdl-codegen-mongo = { workspace = true }
 osdl-codegen-typescript = { workspace = true }

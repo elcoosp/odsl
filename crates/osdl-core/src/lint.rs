@@ -64,7 +64,7 @@ impl LintRule {
         ]
     }
 
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             LintRule::ModelNaming => "model-naming",
             LintRule::FieldNaming => "field-naming",
