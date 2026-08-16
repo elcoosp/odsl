@@ -24,6 +24,7 @@ osdl-codegen-erd.workspace = true
 osdl-codegen-jsonschema.workspace = true
 osdl-codegen-ts-validators.workspace = true
 osdl-codegen-prisma.workspace = true
+osdl-codegen-drizzle.workspace = true
 osdl-codegen-trpc.workspace = true
 osdl-migrator.workspace = true
 osdl-adapter.workspace = true

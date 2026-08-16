@@ -1,0 +1,15 @@
+[package]
+name = "osdl-codegen-drizzle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+osdl-core = { workspace = true }
+osdl-parser = { workspace = true }
+la-arena = { workspace = true }
+
+[dev-dependencies]
+osdl-core = { workspace = true }
+osdl-parser = { workspace = true }

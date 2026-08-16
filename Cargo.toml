@@ -12,6 +12,7 @@ members = [
     "crates/osdl-codegen-jsonschema",
     "crates/osdl-codegen-ts-validators",
     "crates/osdl-codegen-prisma",
+    "crates/osdl-codegen-drizzle",
     "crates/osdl-codegen-trpc",
     "crates/osdl-migrator",
     "crates/osdl-adapter",
@@ -84,6 +85,7 @@ osdl-codegen-erd = { path = "crates/osdl-codegen-erd" }
 osdl-codegen-jsonschema = { path = "crates/osdl-codegen-jsonschema" }
 osdl-codegen-ts-validators = { path = "crates/osdl-codegen-ts-validators" }
 osdl-codegen-prisma = { path = "crates/osdl-codegen-prisma" }
+osdl-codegen-drizzle = { path = "crates/osdl-codegen-drizzle" }
 osdl-codegen-trpc = { path = "crates/osdl-codegen-trpc" }
 osdl-migrator = { path = "crates/osdl-migrator" }
 osdl-adapter = { path = "crates/osdl-adapter" }

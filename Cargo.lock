@@ -3030,6 +3030,7 @@ dependencies = [
  "notify",
  "osdl-adapter",
  "osdl-codegen",
+ "osdl-codegen-drizzle",
  "osdl-codegen-erd",
  "osdl-codegen-graphql",
  "osdl-codegen-jsonschema",
@@ -3059,6 +3060,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "osdl-codegen-drizzle"
+version = "0.1.0"
+dependencies = [
+ "la-arena",
+ "osdl-core",
+ "osdl-parser",
 ]
 
 [[package]]

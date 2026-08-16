@@ -20,6 +20,7 @@ use osdl_codegen_jsonschema::JsonSchemaRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_codegen_prisma::{prisma_to_osdl, render_prisma};
+use osdl_codegen_drizzle::{drizzle_to_osdl, render_drizzle};
 use osdl_codegen_seaorm::SeaOrmRenderer;
 use osdl_codegen_trpc::TrpcRenderer;
 use osdl_codegen_ts_validators::{TsValidatorRenderer, ValidatorFlavor};
@@ -162,6 +163,10 @@ enum ConvertDirection {
     ToPrisma,
     /// Import a Prisma Schema Language document into OSDL (`.prisma` -> `.osdl`).
     FromPrisma,
+    /// Export an OSDL schema to a Drizzle ORM (TypeScript) schema.
+    ToDrizzle,
+    /// Import a Drizzle ORM (TypeScript) schema into OSDL (`.ts` -> `.osdl`).
+    FromDrizzle,
 }
 
 /// Sub-actions of `osdl migrate`.
@@ -381,6 +386,14 @@ fn cmd_convert(
             // Parse + serialize through the canonical OSDL formatter; any
             // import error surfaces here.
             prisma_to_osdl(&src).map_err(|e| io_err(format!("converting prisma: {e}")))?
+        }
+        ConvertDirection::ToDrizzle => {
+            let ast = parse(&src)?;
+            osdl_core::Validator::validate(&ast, Some(Target::SeaOrmSqlite))?;
+            render_drizzle(&ast)
+        }
+        ConvertDirection::FromDrizzle => {
+            drizzle_to_osdl(&src).map_err(|e| io_err(format!("converting drizzle: {e}")))?
         }
     };
     std::fs::write(out, &body).map_err(|e| io_err(format!("writing {}: {e}", out.display())))?;
