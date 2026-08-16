@@ -19,6 +19,7 @@ use osdl_codegen_graphql::GraphQLRenderer;
 use osdl_codegen_jsonschema::JsonSchemaRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
+use osdl_codegen_prisma::{prisma_to_osdl, render_prisma};
 use osdl_codegen_seaorm::SeaOrmRenderer;
 use osdl_codegen_trpc::TrpcRenderer;
 use osdl_codegen_ts_validators::{TsValidatorRenderer, ValidatorFlavor};
@@ -136,6 +137,31 @@ enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Convert a schema to/from a foreign format (Prisma SQLL import/export).
+    ///
+    /// Use `--direction to-prisma` to export an OSDL schema to Prisma Schema
+    /// Language, or `--direction from-prisma` to import a Prisma schema into
+    /// OSDL.
+    Convert {
+        /// Conversion direction.
+        #[arg(long, value_enum, default_value_t = ConvertDirection::ToPrisma)]
+        direction: ConvertDirection,
+        /// Input file (`.osdl` for `to-prisma`, `.prisma` for `from-prisma`).
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Output file (`.prisma` for `to-prisma`, `.osdl` for `from-prisma`).
+        #[arg(default_value = "schema.prisma")]
+        out: std::path::PathBuf,
+    },
+}
+
+/// Conversion direction for `osdl convert`.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum ConvertDirection {
+    /// Export an OSDL schema to Prisma Schema Language (`.osdl` -> `.prisma`).
+    ToPrisma,
+    /// Import a Prisma Schema Language document into OSDL (`.prisma` -> `.osdl`).
+    FromPrisma,
 }
 
 /// Sub-actions of `osdl migrate`.
@@ -307,6 +333,11 @@ fn main() -> Result<(), OsdlError> {
             osdl_mcp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
         }
         Command::Pull { db_url, out } => cmd_pull(&db_url, &out),
+        Command::Convert {
+            direction,
+            input,
+            out,
+        } => cmd_convert(direction, &input, &out),
     }
 }
 
@@ -329,6 +360,32 @@ fn load_ast(input: &std::path::Path, target: Target) -> Result<Ast, OsdlError> {
     let ast = parse(&src)?;
     osdl_core::Validator::validate(&ast, Some(target))?;
     Ok(ast)
+}
+
+fn cmd_convert(
+    direction: ConvertDirection,
+    input: &std::path::Path,
+    out: &std::path::Path,
+) -> Result<(), OsdlError> {
+    let src = std::fs::read_to_string(input)
+        .map_err(|e| io_err(format!("reading {}: {e}", input.display())))?;
+    let body = match direction {
+        ConvertDirection::ToPrisma => {
+            // Validate the OSDL first so we don't emit a prisma doc from a
+            // broken schema.
+            let ast = parse(&src)?;
+            osdl_core::Validator::validate(&ast, Some(Target::SeaOrmSqlite))?;
+            render_prisma(&ast)
+        }
+        ConvertDirection::FromPrisma => {
+            // Parse + serialize through the canonical OSDL formatter; any
+            // import error surfaces here.
+            prisma_to_osdl(&src).map_err(|e| io_err(format!("converting prisma: {e}")))?
+        }
+    };
+    std::fs::write(out, &body).map_err(|e| io_err(format!("writing {}: {e}", out.display())))?;
+    println!("wrote {} (direction: {direction:?})", out.display());
+    Ok(())
 }
 
 /// Build an [`OsdlError::Io`] from an ad-hoc message (e.g. a guard condition

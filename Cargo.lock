@@ -3030,10 +3030,15 @@ dependencies = [
  "notify",
  "osdl-adapter",
  "osdl-codegen",
+ "osdl-codegen-erd",
  "osdl-codegen-graphql",
+ "osdl-codegen-jsonschema",
  "osdl-codegen-mongo",
  "osdl-codegen-openapi",
+ "osdl-codegen-prisma",
  "osdl-codegen-seaorm",
+ "osdl-codegen-trpc",
+ "osdl-codegen-ts-validators",
  "osdl-codegen-typescript",
  "osdl-core",
  "osdl-lsp",
@@ -3057,12 +3062,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "osdl-codegen-erd"
+version = "0.1.0"
+dependencies = [
+ "osdl-core",
+ "osdl-parser",
+ "serde",
+]
+
+[[package]]
 name = "osdl-codegen-graphql"
 version = "0.1.0"
 dependencies = [
  "osdl-core",
  "osdl-parser",
  "serde",
+]
+
+[[package]]
+name = "osdl-codegen-jsonschema"
+version = "0.1.0"
+dependencies = [
+ "osdl-core",
+ "osdl-parser",
+ "serde_json",
 ]
 
 [[package]]
@@ -3090,6 +3113,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "osdl-codegen-prisma"
+version = "0.1.0"
+dependencies = [
+ "la-arena",
+ "osdl-core",
+ "osdl-parser",
+]
+
+[[package]]
 name = "osdl-codegen-seaorm"
 version = "0.1.0"
 dependencies = [
@@ -3101,6 +3133,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "osdl-codegen-trpc"
+version = "0.1.0"
+dependencies = [
+ "osdl-codegen-ts-validators",
+ "osdl-core",
+ "osdl-parser",
+]
+
+[[package]]
+name = "osdl-codegen-ts-validators"
+version = "0.1.0"
+dependencies = [
+ "osdl-core",
+ "osdl-parser",
 ]
 
 [[package]]
@@ -3146,9 +3195,12 @@ name = "osdl-mcp"
 version = "0.1.0"
 dependencies = [
  "osdl-codegen-graphql",
+ "osdl-codegen-jsonschema",
  "osdl-codegen-mongo",
  "osdl-codegen-openapi",
  "osdl-codegen-seaorm",
+ "osdl-codegen-trpc",
+ "osdl-codegen-ts-validators",
  "osdl-codegen-typescript",
  "osdl-core",
  "osdl-parser",
