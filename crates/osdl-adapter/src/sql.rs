@@ -226,6 +226,22 @@ pub fn create_table_sql(dialect: SqlDialect, model: &LockModel, lf: &Lockfile) -
 /// to rebuild a SQLite table in place for operations SQLite cannot do with a
 /// single `ALTER` (adding a NOT NULL / foreign-key column, dropping a column,
 /// or changing a column's type).
+/// Render a `CREATE VIEW` / `CREATE MATERIALIZED VIEW` statement for a `LockView`.
+pub fn create_view_sql(dialect: SqlDialect, view: &osdl_core::ast::LockView) -> String {
+    use crate::naming::quote_ident_for;
+    let kw = if view.materialized && dialect == SqlDialect::Postgres {
+        "CREATE MATERIALIZED VIEW"
+    } else {
+        "CREATE VIEW"
+    };
+    format!(
+        "{} {} AS {}",
+        kw,
+        quote_ident_for(dialect, &view.name),
+        view.query.trim()
+    )
+}
+
 pub fn op_to_sql(
     dialect: SqlDialect,
     op: &MigrationOp,
@@ -440,6 +456,20 @@ pub fn op_to_sql(
                 }
             }
         }
+        MigrationOp::CreateView { view } => {
+            let v = target
+                .view_by_name(view)
+                .ok_or_else(|| {
+                    AdapterError::Render(format!(
+                        "create-view op references unknown view `{view}` (not present in target lockfile)"
+                    ))
+                })?;
+            Ok(vec![create_view_sql(dialect, v)])
+        }
+        MigrationOp::DropView { view } => Ok(vec![format!(
+            "DROP VIEW IF EXISTS {}",
+            quote_ident_for(dialect, view)
+        )]),
     }
 }
 
@@ -604,6 +634,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![],
+            views: vec![],
         }
     }
 
@@ -718,6 +749,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::AddField {
             model: "User".into(),
@@ -737,6 +769,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::AlterField {
             model: "User".into(),
@@ -767,6 +800,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let sql = create_table_sql(SqlDialect::Postgres, &m, &lf_with_user);
         assert!(sql.contains("REFERENCES \"users\"(\"id\")"));
@@ -795,6 +829,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user, post],
+            views: vec![],
         };
         let sql = create_table_sql(SqlDialect::Postgres, lf.model_by_name("Post").unwrap(), &lf);
         // INTEGER FK (matching the int PK), not UUID.
@@ -810,6 +845,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::AddField {
             model: "User".into(),
@@ -837,6 +873,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let target = Lockfile {
             version: 1,
@@ -850,6 +887,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let op = MigrationOp::AddField {
             model: "User".into(),
@@ -893,6 +931,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let target = Lockfile {
             version: 1,
@@ -903,6 +942,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let op = MigrationOp::DropField {
             model: "User".into(),

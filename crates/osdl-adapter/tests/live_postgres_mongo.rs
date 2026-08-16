@@ -54,6 +54,7 @@ async fn postgres_apply_create_model_live() {
             indexes: vec![],
             primary_key: vec![],
         }],
+        views: vec![],
     };
     let plan = MigrationPlan {
         ops: vec![MigrationOp::CreateModel {
@@ -92,6 +93,7 @@ async fn mongo_apply_create_model_live() {
             indexes: vec![],
             primary_key: vec![],
         }],
+        views: vec![],
     };
     let plan = MigrationPlan {
         ops: vec![MigrationOp::CreateModel {

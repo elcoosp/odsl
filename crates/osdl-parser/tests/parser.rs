@@ -566,12 +566,7 @@ User
 #[test]
 fn config_suppresses_missing_timestamps_lint() {
     use osdl_core::lint::{LintConfig, LintRule, Linter};
-    let src = "config
-  audit created_at,updated_at
-
-User
-  id uuid -pk
-";
+    let src = "config\n  audit created_at,updated_at\n\nUser\n  id uuid -pk\n";
     let ast = parse(src).unwrap();
     let linter = Linter::new(LintConfig::default());
     let findings = linter.lint(&ast);
@@ -581,4 +576,99 @@ User
         .filter(|f| f.rule == LintRule::MissingTimestamps)
         .count();
     assert_eq!(ts, 0, "expected no missing-timestamps, got: {findings:?}");
+}
+
+// --- Phase 1.5: views (read-models) ---
+
+#[test]
+fn parses_plain_view() {
+    let src = "view RecentPosts = SELECT p.id, p.title FROM posts p ORDER BY p.created_at DESC\n";
+    let ast = parse(src).unwrap();
+    assert_eq!(ast.views.len(), 1);
+    let v = ast.view_by_name("RecentPosts").unwrap();
+    assert!(!v.materialized);
+    assert!(v.fields.is_empty());
+    assert_eq!(
+        v.query.trim(),
+        "SELECT p.id, p.title FROM posts p ORDER BY p.created_at DESC"
+    );
+}
+
+#[test]
+fn parses_view_with_projection_and_materialized() {
+    let src = "view UserSummary id uuid, email string -materialized = SELECT u.id, u.email FROM users u\n";
+    let ast = parse(src).unwrap();
+    let v = ast.view_by_name("UserSummary").unwrap();
+    assert!(v.materialized);
+    assert_eq!(v.fields.len(), 2);
+    assert_eq!(v.fields[0].name, "id");
+    assert_eq!(v.fields[0].ty, "uuid");
+    assert_eq!(v.fields[1].name, "email");
+    assert_eq!(v.fields[1].ty, "string");
+}
+
+#[test]
+fn parses_multiline_view_query() {
+    let src = "view ActiveUsers id uuid, email string -materialized =\n  SELECT u.id, u.email\n  FROM users u\n  WHERE u.active = true\n";
+    let ast = parse(src).unwrap();
+    let v = ast.view_by_name("ActiveUsers").unwrap();
+    assert_eq!(v.fields.len(), 2);
+    assert!(v.query.contains("WHERE u.active = true"));
+    assert!(v.query.contains("FROM users u"));
+}
+
+#[test]
+fn view_round_trips_through_format() {
+    use osdl_core::formatter::format_ast;
+    let src = "view UserSummary id uuid, email string -materialized = SELECT u.id, u.email FROM users u\n";
+    let a = parse(src).unwrap();
+    let formatted = format_ast(&a);
+    let b = parse(&formatted).unwrap();
+    assert_eq!(a.views.len(), b.views.len());
+    let va = a.view_by_name("UserSummary").unwrap();
+    let vb = b.view_by_name("UserSummary").unwrap();
+    assert_eq!(va.name, vb.name);
+    assert_eq!(va.materialized, vb.materialized);
+    assert_eq!(va.fields, vb.fields);
+    assert_eq!(va.query, vb.query);
+}
+
+#[test]
+fn view_without_equals_is_rejected_at_parse_time() {
+    // A view declaration must use `=` to separate the projection from the
+    // query; otherwise it is a parse error (not a silent validation miss).
+    let src = "view Broken\n";
+    let err = parse(src).unwrap_err();
+    assert!(format!("{err}").contains("must use `=`"));
+}
+
+#[test]
+fn view_with_equals_but_empty_query_is_rejected_at_validation() {
+    // `= ` with nothing after it parses (valid syntax) but validation rejects
+    // the missing query body.
+    let src = "view Broken = \n";
+    let ast = parse(src);
+    let ast = if let Ok(a) = ast {
+        a
+    } else {
+        panic!("expected parse to succeed for `view Broken = `: {:?}", ast);
+    };
+    let err = osdl_core::validator::Validator::validate(&ast, None).unwrap_err();
+    assert!(format!("{err}").contains("must declare a query"));
+}
+
+#[test]
+fn view_name_collision_with_model_is_rejected() {
+    let src = "User\n  id uuid -pk\n\nview User = SELECT * FROM users\n";
+    let ast = parse(src).unwrap();
+    let err = osdl_core::validator::Validator::validate(&ast, None).unwrap_err();
+    assert!(format!("{err}").contains("collides with a model"));
+}
+
+#[test]
+fn unknown_view_projection_type_is_rejected() {
+    let src = "view V bad foo = SELECT 1\n";
+    let ast = parse(src).unwrap();
+    let err = osdl_core::validator::Validator::validate(&ast, None).unwrap_err();
+    assert!(format!("{err}").contains("unknown type `foo`"));
 }

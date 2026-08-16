@@ -17,7 +17,10 @@ pub mod naming;
 pub mod types;
 pub mod validator;
 
-pub use ast::{Ast, Field, FieldIdx, LockField, LockIndex, LockModel, Model, ModelIdx};
+pub use ast::{
+    Ast, Field, FieldIdx, LockField, LockIndex, LockModel, LockView, Model, ModelIdx, View,
+    ViewField,
+};
 pub use errors::{CompileErrorKind, OsdlError, ParseError, Span};
 pub use intent_compat::Target;
 pub use lockfile::Lockfile;

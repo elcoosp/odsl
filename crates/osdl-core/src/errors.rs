@@ -66,6 +66,8 @@ impl Diagnostic for ParseError {
 pub enum CompileErrorKind {
     /// BR-002 / REQ-FUNC-004: reference target does not exist.
     UnresolvedReference { from: String, target: String },
+    /// A view (read-model) declaration is malformed or unsupported.
+    ViewError { view: String, reason: String },
     /// REQ-FUNC-006: cyclic dependency between models.
     CyclicDependency { models: Vec<String> },
     /// REQ-FUNC-007: intent flag incompatible with field type.
@@ -95,6 +97,9 @@ impl fmt::Display for CompileErrorKind {
                     f,
                     "Unresolved reference: `{from}` points to unknown {target}"
                 )
+            }
+            CompileErrorKind::ViewError { view, reason } => {
+                write!(f, "View `{view}` is invalid: {reason}")
             }
             CompileErrorKind::CyclicDependency { models } => {
                 write!(

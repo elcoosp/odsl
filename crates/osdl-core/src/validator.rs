@@ -36,6 +36,7 @@ impl Validator {
         Self::check_intent_compat(ast)?;
         Self::check_model_indexes(ast)?;
         Self::check_m2m_targets(ast)?;
+        Self::check_views(ast)?;
         if let Some(t) = target {
             Self::check_target_compat(ast, t)?;
             Self::prevent_cycles(ast)?;
@@ -269,7 +270,61 @@ impl Validator {
         Ok(())
     }
 
-    /// REQ-FUNC-008 / BR-003: target must support every requested intent.
+    /// Phase 1.5: validate top-level `view` (read-model) declarations.
+    ///
+    /// * A view must have a non-empty name and query.
+    /// * The optional projection's field types must resolve to a known scalar
+    ///   or custom type (so generated read-model structs are well-typed).
+    /// * A view name must not collide with a model name.
+    /// * View DDL is only emitted for SQL backends and GraphQL; Mongo (and pure
+    ///   TS/validator targets) cannot materialize an arbitrary query, so a view
+    ///   is rejected when the target is `Mongo`.
+    fn check_views(ast: &Ast) -> Result<(), OsdlError> {
+        use crate::types::ScalarType;
+        let mut seen = std::collections::HashSet::new();
+        for v in ast.views() {
+            if v.name.is_empty() {
+                return Err(OsdlError::compile(CompileErrorKind::ViewError {
+                    view: v.name.clone(),
+                    reason: "view name must not be empty".into(),
+                }));
+            }
+            if v.query.trim().is_empty() {
+                return Err(OsdlError::compile(CompileErrorKind::ViewError {
+                    view: v.name.clone(),
+                    reason: "view must declare a query after `=`".into(),
+                }));
+            }
+            if !seen.insert(v.name.clone()) {
+                return Err(OsdlError::compile(CompileErrorKind::ViewError {
+                    view: v.name.clone(),
+                    reason: "duplicate view name".into(),
+                }));
+            }
+            if ast.model_by_name(&v.name).is_some() {
+                return Err(OsdlError::compile(CompileErrorKind::ViewError {
+                    view: v.name.clone(),
+                    reason: "view name collides with a model name".into(),
+                }));
+            }
+            for f in &v.fields {
+                // Accept a known scalar keyword or a custom type declared in
+                // the schema. Anything else is rejected as an unknown type.
+                let known = ScalarType::from_keyword(&f.ty).is_some()
+                    || ast.custom_type_by_name(&f.ty).is_some();
+                if !known {
+                    return Err(OsdlError::compile(CompileErrorKind::ViewError {
+                        view: v.name.clone(),
+                        reason: format!(
+                            "projection field `{}` has unknown type `{}`",
+                            f.name, f.ty
+                        ),
+                    }));
+                }
+            }
+        }
+        Ok(())
+    }
     fn check_target_compat(ast: &Ast, target: Target) -> Result<(), OsdlError> {
         for (_midx, model) in ast.models() {
             for (_fidx, field) in model.fields() {

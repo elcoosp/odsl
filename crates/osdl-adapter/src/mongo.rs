@@ -124,6 +124,10 @@ pub fn op_to_mongo(op: &MigrationOp, target: &Lockfile) -> Vec<MongoOp> {
             name: collection_name(model),
             field: field.clone(),
         }],
+        MigrationOp::CreateView { .. } | MigrationOp::DropView { .. } => {
+            // Mongo has no native views; view ops are no-ops for the Mongo adapter.
+            vec![]
+        }
     }
 }
 
@@ -170,6 +174,10 @@ pub fn op_to_mongo_down(op: &MigrationOp, current: &Lockfile) -> Vec<MongoOp> {
             } else {
                 vec![]
             }
+        }
+        MigrationOp::CreateView { .. } | MigrationOp::DropView { .. } => {
+            // Mongo has no native views; view ops are no-ops for the Mongo adapter.
+            vec![]
         }
     }
 }
@@ -281,6 +289,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::CreateModel {
             model: "User".into(),
@@ -299,6 +308,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::DropField {
             model: "User".into(),
@@ -315,6 +325,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::CreateModel {
             model: "User".into(),
@@ -331,6 +342,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::DropModel {
             model: "User".into(),
@@ -345,6 +357,7 @@ mod tests {
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
+            views: vec![],
         };
         let op = MigrationOp::AddField {
             model: "User".into(),

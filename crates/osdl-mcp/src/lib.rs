@@ -395,6 +395,7 @@ fn tool_migrate_preview(args: &Value) -> Value {
             version: 1,
             checksum: String::new(),
             models: vec![],
+            views: vec![],
         },
     };
     let plan = match osdl_migrator::plan_migration(&current, &ast) {

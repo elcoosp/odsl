@@ -12,7 +12,7 @@
 #![allow(clippy::result_large_err)]
 
 use osdl_core::Target;
-use osdl_core::ast::{Ast, LockField, LockModel};
+use osdl_core::ast::{Ast, LockField, LockModel, LockView};
 use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
 use std::collections::BTreeMap;
@@ -42,6 +42,10 @@ pub enum MigrationOp {
         nullable: bool,
         uniq: bool,
     },
+    /// Create a view (read-model) that did not exist before.
+    CreateView { view: String },
+    /// Drop a view that no longer exists.
+    DropView { view: String },
 }
 
 /// The ordered plan describing how to move `from` to `to`.
@@ -89,6 +93,39 @@ impl MigrationPlan {
         }
         ops.extend(drops);
 
+        // Views (read-models). Created/dropped by name; a changed view query or
+        // projection is treated as drop + create (views are cheap to rebuild).
+        let from_views: BTreeMap<&str, &LockView> =
+            from.views.iter().map(|v| (v.name.as_str(), v)).collect();
+        let to_views: BTreeMap<&str, &LockView> =
+            to.views.iter().map(|v| (v.name.as_str(), v)).collect();
+        let mut view_drops = Vec::new();
+        for (name, tv) in &to_views {
+            match from_views.get(name) {
+                None => ops.push(MigrationOp::CreateView {
+                    view: (*name).to_string(),
+                }),
+                Some(fv) if fv != tv => {
+                    // Changed: drop the old, create the new.
+                    view_drops.push(MigrationOp::DropView {
+                        view: (*name).to_string(),
+                    });
+                    ops.push(MigrationOp::CreateView {
+                        view: (*name).to_string(),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        for name in from_views.keys() {
+            if !to_views.contains_key(name) {
+                view_drops.push(MigrationOp::DropView {
+                    view: (*name).to_string(),
+                });
+            }
+        }
+        ops.extend(view_drops);
+
         Self { ops }
     }
 
@@ -108,6 +145,8 @@ impl MigrationPlan {
                 MigrationOp::AlterField { model, field, .. } => {
                     format!("alter field {model}.{field}")
                 }
+                MigrationOp::CreateView { view } => format!("create view {view}"),
+                MigrationOp::DropView { view } => format!("drop view {view}"),
             })
             .collect()
     }
@@ -121,7 +160,10 @@ impl MigrationPlan {
                 MigrationOp::DropModel { .. }
                 | MigrationOp::DropField { .. }
                 | MigrationOp::AlterField { .. } => true,
-                MigrationOp::CreateModel { .. } | MigrationOp::AddField { .. } => false,
+                MigrationOp::CreateModel { .. }
+                | MigrationOp::AddField { .. }
+                | MigrationOp::CreateView { .. }
+                | MigrationOp::DropView { .. } => false,
             })
             .collect()
     }
@@ -192,6 +234,9 @@ impl MigrationPlan {
                     ));
                 }
                 MigrationOp::CreateModel { .. } => {}
+                // Views hold no data: creating/dropping them is online-safe and
+                // non-destructive, so no advisory is raised.
+                MigrationOp::CreateView { .. } | MigrationOp::DropView { .. } => {}
             }
         }
         out
@@ -287,6 +332,7 @@ mod tests {
             version: Lockfile::VERSION,
             checksum: String::new(),
             models,
+            views: vec![],
         }
     }
 
@@ -424,5 +470,59 @@ mod tests {
         let plan = plan_migration(&current, &ast).unwrap();
         assert_eq!(plan.ops.len(), 1);
         assert!(matches!(plan.ops[0], MigrationOp::CreateModel { .. }));
+    }
+
+    #[test]
+    fn diff_detects_added_and_dropped_views() {
+        let from = lf(vec![]);
+        let to = lf(vec![]);
+        let mut to_with_views = to;
+        to_with_views.views = vec![
+            LockView {
+                name: "RecentPosts".into(),
+                fields: vec![],
+                query: "SELECT p.id FROM posts p".into(),
+                materialized: false,
+            },
+            LockView {
+                name: "ActiveUsers".into(),
+                fields: vec![],
+                query: "SELECT u.id FROM users u WHERE u.active = true".into(),
+                materialized: true,
+            },
+        ];
+        let plan = MigrationPlan::diff(&from, &to_with_views);
+        // Two CREATE VIEW ops (order-independent).
+        assert_eq!(plan.ops.len(), 2);
+        let creates: Vec<&str> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                MigrationOp::CreateView { view } => Some(view.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(creates.contains(&"RecentPosts"));
+        assert!(creates.contains(&"ActiveUsers"));
+
+        // Removing a view produces a DROP VIEW.
+        let to_empty = lf(vec![]);
+        let mut from_with_views = lf(vec![]);
+        from_with_views.views = vec![LockView {
+            name: "RecentPosts".into(),
+            fields: vec![],
+            query: "SELECT 1".into(),
+            materialized: false,
+        }];
+        let plan2 = MigrationPlan::diff(&from_with_views, &to_empty);
+        assert_eq!(plan2.ops.len(), 1);
+        assert_eq!(
+            plan2.ops[0],
+            MigrationOp::DropView {
+                view: "RecentPosts".into()
+            }
+        );
+        // Views are non-destructive.
+        assert!(!plan2.is_destructive());
     }
 }

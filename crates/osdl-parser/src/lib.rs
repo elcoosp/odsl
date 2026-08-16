@@ -10,7 +10,7 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex, SchemaConfig};
+use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex, SchemaConfig, View, ViewField};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, FkAction, Intent, Reference, ScalarType};
 use pest::Parser;
@@ -54,6 +54,8 @@ struct ParsedLine {
     line_no: usize,
     byte_start: usize,
     byte_end: usize,
+    /// Original source line text (used to extract verbatim view-query bodies).
+    raw: String,
     /// Doc-comment text from a `///` line, attached to the next declaration.
     doc: Option<String>,
 }
@@ -111,6 +113,12 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     // Top-level `config` block accumulation (roadmap Phase 1.4).
     let mut parsing_config = false;
     let mut config = SchemaConfig::default();
+    // Top-level `view` block accumulation (roadmap Phase 1.5). A view's query
+    // body may span multiple physical lines; `current_view` holds the
+    // in-progress view and `parsing_view` marks that subsequent indented lines
+    // are query continuations (not fields/models).
+    let mut parsing_view = false;
+    let mut current_view: Option<View> = None;
     // Doc comment (`///`) pending attachment to the next model/field declaration.
     let mut pending_doc: Option<String> = None;
 
@@ -128,6 +136,27 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
         if pl.tokens.is_empty() {
             continue;
         }
+        // While parsing a `view`, indented lines are query continuations. A new
+        // top-level (indent 0) declaration ends the view and is handled by the
+        // normal logic below in the *same* iteration.
+        if parsing_view {
+            if pl.indent == 0 {
+                if let Some(v) = current_view.take() {
+                    ast.add_view(v);
+                }
+                parsing_view = false;
+                // Fall through to handle `pl` as a normal top-level declaration.
+            } else {
+                if let Some(v) = current_view.as_mut() {
+                    let chunk = pl.raw.trim();
+                    if !v.query.is_empty() {
+                        v.query.push(' ');
+                    }
+                    v.query.push_str(chunk);
+                }
+                continue;
+            }
+        }
         if pl.indent == 0 {
             // A `config` block (roadmap Phase 1.4): top-level `config` begins a
             // block of indented settings. We don't create a model for it.
@@ -143,6 +172,20 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 if !cfg_tokens.is_empty() {
                     apply_config_line(&mut config, &cfg_tokens);
                 }
+                continue;
+            }
+            // A `view` declaration (roadmap Phase 1.5): `view Name [field type,
+            // ...] [-materialized] = SELECT ...`. The query body may continue on
+            // following indented lines.
+            if let Some(RawToken::Name(n) | RawToken::Word(n)) = pl.tokens.first()
+                && n == "view"
+            {
+                if let Some(m) = current_model.take() {
+                    ast.add_model(m);
+                }
+                let view = parse_view_decl(&pl.tokens, pl.line_no, &pl.raw)?;
+                current_view = Some(view);
+                parsing_view = true;
                 continue;
             }
             // A `use` declaration is not a model.
@@ -260,6 +303,11 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     }
     if let Some(m) = current_model.take() {
         ast.add_model(m);
+    }
+    // Finalize any view still open at EOF (e.g. a view whose last continuation
+    // line is the final line of the file).
+    if let Some(v) = current_view.take() {
+        ast.add_view(v);
     }
     // Store the accumulated `config` block on the AST.
     ast.config = config;
@@ -485,6 +533,84 @@ fn capture_model_pk(model: &mut Model, tokens: &[RawToken]) -> bool {
         model.primary_key = fields;
     }
     true
+}
+
+/// Parse a top-level `view` declaration into a [`View`].
+///
+/// Syntax:
+/// ```text
+/// view Name [field type, field type, ...] [-materialized] = SELECT ...
+/// ```
+/// The projection (`field type` pairs) is optional. The query body is taken
+/// verbatim from the source *after* the first `=` (so it preserves case and
+/// any characters that aren't tokenized), and continuation lines are appended
+/// by the caller while `parsing_view` is active.
+fn parse_view_decl(tokens: &[RawToken], line_no: usize, raw: &str) -> Result<View, OsdlError> {
+    // `raw` form: `view Name ... = QUERY`. Everything after the first `=`
+    // (the separator) is the query start.
+    let query = match raw.split_once('=') {
+        Some((_, q)) => q.trim().to_string(),
+        None => {
+            return Err(OsdlError::Parse(
+                ParseError::new(
+                    "view declaration must use `=` to separate the projection from the query",
+                )
+                .with_span(span_at(raw, 0, raw.len(), line_no), raw),
+            ));
+        }
+    };
+
+    let name = match tokens.get(1) {
+        Some(RawToken::Name(n)) | Some(RawToken::Word(n)) => n.clone(),
+        _ => {
+            return Err(OsdlError::Parse(
+                ParseError::new("expected a view name after `view`")
+                    .with_span(span_at(raw, 0, raw.len(), line_no), raw),
+            ));
+        }
+    };
+
+    // Walk tokens from index 2, collecting `field type` pairs until we hit the
+    // `=` separator (a lone `=` tokenizes as `Word("=")`) or a `-materialized` flag.
+    // Comma tokens (`Word(",")`) between pairs are skipped.
+    let mut fields: Vec<ViewField> = Vec::new();
+    let mut materialized = false;
+    let mut i = 2;
+    while i < tokens.len() {
+        match &tokens[i] {
+            RawToken::Word(w) if w == "=" => break,
+            RawToken::Word(w) if w == "," => {
+                i += 1;
+            }
+            RawToken::Flag(f) if f == "-materialized" => {
+                materialized = true;
+                i += 1;
+            }
+            RawToken::Word(fname) | RawToken::Name(fname) if i + 1 < tokens.len() => {
+                // Expect a following type word; strip a trailing comma that
+                // belongs to the comma-separated projection list.
+                if let Some(RawToken::Word(fty) | RawToken::Name(fty)) = tokens.get(i + 1) {
+                    fields.push(ViewField {
+                        name: fname.trim_end_matches(',').to_string(),
+                        ty: fty.trim_end_matches(',').to_string(),
+                    });
+                    i += 2;
+                } else {
+                    // Trailing name with no type — treat as query start.
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    Ok(View {
+        name,
+        fields,
+        query,
+        materialized,
+        line: line_no,
+    })
 }
 
 /// Shared lookup context for field parsing: the set of known model names and
@@ -1043,6 +1169,8 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
     let span = pair.as_span();
     let byte_start = span.start();
     let byte_end = span.end();
+    // Capture the original line text before `pair` is consumed by `into_inner`.
+    let raw = pair.as_str().to_string();
 
     let mut indent = 0usize;
     let mut tokens = Vec::new();
@@ -1153,6 +1281,42 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                             }
                             tokens.push(RawToken::TypeDecl { name, rhs });
                         }
+                        Rule::view_line => {
+                            // `view Name (field type, ...) [-materialized] = QUERY`.
+                            // Reconstruct the same token stream `parse_view_decl`
+                            // expects: `view`, head words/flags, a `=` sentinel,
+                            // and the query as a word (the query is actually read
+                            // from the raw line text, so its exact tokenization
+                            // does not matter).
+                            tokens.push(RawToken::Word("view".to_string()));
+                            let mut query = String::new();
+                            for v in b.into_inner() {
+                                match v.as_rule() {
+                                    Rule::view_head => {
+                                        for h in v.into_inner() {
+                                            match h.as_rule() {
+                                                Rule::word | Rule::view_word => tokens
+                                                    .push(RawToken::Word(h.as_str().to_string())),
+                                                Rule::comma => {}
+                                                Rule::view_flag => tokens
+                                                    .push(RawToken::Flag(h.as_str().to_string())),
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    Rule::equals => {
+                                        tokens.push(RawToken::Word("=".to_string()));
+                                    }
+                                    Rule::view_query => {
+                                        query = v.as_str().to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !query.is_empty() {
+                                tokens.push(RawToken::Word(query));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1167,6 +1331,7 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
         line_no,
         byte_start,
         byte_end,
+        raw,
         doc: doc_accum,
     })
 }

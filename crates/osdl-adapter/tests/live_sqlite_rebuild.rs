@@ -21,6 +21,7 @@ async fn rebuild_preserves_data_on_add_not_null() {
             indexes: vec![],
             primary_key: vec![],
         }],
+        views: vec![],
     };
     // target = id + age(int not null).
     let target = Lockfile {
@@ -35,6 +36,7 @@ async fn rebuild_preserves_data_on_add_not_null() {
             indexes: vec![],
             primary_key: vec![],
         }],
+        views: vec![],
     };
 
     let adapter = connect(&url).await.expect("connect");

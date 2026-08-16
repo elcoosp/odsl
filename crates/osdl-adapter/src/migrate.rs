@@ -68,6 +68,8 @@ fn slugify(plan: &MigrationPlan) -> String {
             MigrationOp::AlterField { model, field, .. } => {
                 format!("alter_{}_{}", model.to_lowercase(), field.to_lowercase())
             }
+            MigrationOp::CreateView { view } => format!("create_view_{}", view.to_lowercase()),
+            MigrationOp::DropView { view } => format!("drop_view_{}", view.to_lowercase()),
         })
         .collect();
     parts.sort();
@@ -253,6 +255,15 @@ fn down_sql(
             )
             .ok()
             .map(|stmts| stmts.join("; "))
+        }
+        MigrationOp::CreateView { view } => Some(format!(
+            "DROP VIEW IF EXISTS {}",
+            quote_ident_for(dialect, view)
+        )),
+        MigrationOp::DropView { view } => {
+            let cur = current?;
+            let v = cur.view_by_name(view)?;
+            Some(crate::sql::create_view_sql(dialect, v))
         }
     }
 }
@@ -496,6 +507,18 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                 "        manager.drop_table(\n            Table::drop()\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
             )]
         }
+        MigrationOp::CreateView { view } => {
+            vec![format!(
+                "        // create view `{}` is applied via raw SQL (CREATE VIEW)",
+                view
+            )]
+        }
+        MigrationOp::DropView { view } => {
+            vec![format!(
+                "        // drop view `{}` is applied via raw SQL (DROP VIEW)",
+                view
+            )]
+        }
     }
 }
 
@@ -643,6 +666,8 @@ fn seaorm_down_stmt(op: &MigrationOp, target: &Lockfile) -> Option<String> {
             Some("        // alter field rollback is backend-specific; supply manually".to_string())
         }
         MigrationOp::DropModel { .. } => None,
+        MigrationOp::CreateView { .. } => None,
+        MigrationOp::DropView { .. } => None,
     }
 }
 
@@ -793,6 +818,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         }
     }
 
@@ -857,6 +883,7 @@ mod tests {
                     primary_key: vec![],
                 },
             ],
+            views: vec![],
         };
         let plan = MigrationPlan {
             ops: vec![MigrationOp::CreateModel {
@@ -908,6 +935,7 @@ mod tests {
                     primary_key: vec![],
                 },
             ],
+            views: vec![],
         };
         let plan = MigrationPlan {
             ops: vec![MigrationOp::CreateModel {
@@ -940,6 +968,7 @@ mod tests {
                 }],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let plan = MigrationPlan {
             ops: vec![MigrationOp::CreateModel {
@@ -974,6 +1003,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let plan = MigrationPlan {
             ops: vec![MigrationOp::CreateModel {
@@ -1005,6 +1035,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         };
         let plan = MigrationPlan {
             ops: vec![MigrationOp::AddField {
@@ -1074,6 +1105,7 @@ mod tests {
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![],
+            views: vec![],
         };
         let plan = osdl_migrator::plan_migration(&current, &ast).unwrap();
         let target = Lockfile::from_ast(&ast);
@@ -1107,6 +1139,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         }
     }
 
@@ -1124,6 +1157,7 @@ mod tests {
                 indexes: vec![],
                 primary_key: vec![],
             }],
+            views: vec![],
         }
     }
 

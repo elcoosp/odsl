@@ -552,7 +552,9 @@ fn describe_op(op: &osdl_migrator::MigrationOp) -> String {
             format!("alter field {model}.{field}")
         }
         osdl_migrator::MigrationOp::CreateModel { .. }
-        | osdl_migrator::MigrationOp::AddField { .. } => String::new(),
+        | osdl_migrator::MigrationOp::AddField { .. }
+        | osdl_migrator::MigrationOp::CreateView { .. }
+        | osdl_migrator::MigrationOp::DropView { .. } => String::new(),
     }
 }
 
@@ -563,6 +565,7 @@ fn cmd_migrate_plan(input: &std::path::Path, target: Target, apply: bool) -> Res
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
+        views: vec![],
     });
     let plan = plan_migration(&current, &ast)?;
     for line in plan.describe() {
@@ -591,6 +594,7 @@ fn cmd_migrate_up(
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
+        views: vec![],
     });
     let plan = plan_migration(&current, &ast)?;
     for line in plan.describe() {
@@ -681,6 +685,7 @@ fn cmd_migrate_create(
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
+        views: vec![],
     });
     let plan = plan_migration(&current, &ast)?;
     for line in plan.describe() {
@@ -737,6 +742,7 @@ fn cmd_migrate_down(
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
+        views: vec![],
     });
     let target_lock = Lockfile::from_ast(&ast);
     // Inverse plan: from the desired schema back to the deployed one.
@@ -830,6 +836,7 @@ fn cmd_migrate_status(
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
+        views: vec![],
     });
     let target_lock = Lockfile::from_ast(&ast);
     let plan = plan_migration(&current, &ast)?;
@@ -910,6 +917,7 @@ fn cmd_migrate_test(
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
+        views: vec![],
     };
 
     let runtime =

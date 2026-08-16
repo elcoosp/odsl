@@ -70,6 +70,11 @@ pub struct Ast {
     pub field_deprecated: HashMap<(String, String), String>,
     /// Schema-level configuration from the top-level `config` block, if any.
     pub config: SchemaConfig,
+    /// Read-models / projections declared with top-level `view` blocks. Kept as
+    /// a *separate* collection from `models` so the two namespaces never
+    /// collide and no model/field/lockfile literal has to change when views are
+    /// added.
+    pub views: Vec<View>,
 }
 
 impl Ast {
@@ -94,6 +99,21 @@ impl Ast {
 
     pub fn models(&self) -> impl Iterator<Item = (ModelIdx, &Model)> {
         self.models.iter()
+    }
+
+    /// Add a view (read-model) to the schema.
+    pub fn add_view(&mut self, view: View) {
+        self.views.push(view);
+    }
+
+    /// Resolve a view by name.
+    pub fn view_by_name(&self, name: &str) -> Option<&View> {
+        self.views.iter().find(|v| v.name == name)
+    }
+
+    /// Iterate the views in declaration order.
+    pub fn views(&self) -> impl Iterator<Item = &View> {
+        self.views.iter()
     }
 
     /// Resolve a custom type by name.
@@ -309,6 +329,81 @@ pub struct ModelIndex {
     pub order: Option<String>,
     /// `NULLS FIRST` / `NULLS LAST` placement (Postgres).
     pub nulls: Option<String>,
+}
+
+/// A read-model / projection declared with a top-level `view` block.
+///
+/// ```text
+/// view UserSummary (id, email, post_count) -materialized =
+///   SELECT u.id, u.email, COUNT(p.id)
+///   FROM users u LEFT JOIN posts p ON p.author_id = u.id
+///   GROUP BY u.id, u.email
+/// ```
+///
+/// A view carries an explicit column projection (`fields`) — used for
+/// typed read-models in codegen — plus the raw query body (`query`) that
+/// becomes the `AS` clause of a SQL `CREATE VIEW`. `-materialized` marks a
+/// `CREATE MATERIALIZED VIEW` (Postgres; other dialects downgrade to a plain
+/// view or fail at apply time). Views are stored as a *separate* top-level
+/// collection from `Model`s so no model/field/lockfile literal breaks and the
+/// two namespaces never collide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct View {
+    pub name: String,
+    /// Declared output columns (name + type). May be empty when the schema
+    /// relies on the query's own projection; codegen still emits a typed row
+    /// when present.
+    pub fields: Vec<ViewField>,
+    /// The SELECT body (everything after `=`), emitted verbatim into the view.
+    pub query: String,
+    /// Whether this is a `CREATE MATERIALIZED VIEW` (Postgres) vs plain.
+    pub materialized: bool,
+    pub line: usize,
+}
+
+/// A single column of a [`View`] projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewField {
+    pub name: String,
+    /// Scalar type keyword (`uuid`, `string`, `int`, ...) or a model reference
+    /// `Model.field`. Same vocabulary as a model field's `ty`.
+    pub ty: String,
+}
+
+/// Lockfile projection of a [`View`] (deterministic, serializable).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockView {
+    pub name: String,
+    pub fields: Vec<(String, String)>,
+    pub query: String,
+    pub materialized: bool,
+}
+
+impl Ast {
+    /// Project the views into their deterministic lockfile form (fields sorted
+    /// by name, views sorted by name) for diffing / migration planning.
+    pub fn to_lock_views(&self) -> Vec<LockView> {
+        let mut views: Vec<LockView> = self
+            .views
+            .iter()
+            .map(|v| {
+                let mut fields: Vec<(String, String)> = v
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                fields.sort();
+                LockView {
+                    name: v.name.clone(),
+                    fields,
+                    query: v.query.clone(),
+                    materialized: v.materialized,
+                }
+            })
+            .collect();
+        views.sort_by(|a, b| a.name.cmp(&b.name));
+        views
+    }
 }
 
 /// Lockfile projection of a model-level index (see [`ModelIndex`]).

@@ -11,7 +11,7 @@
 //! * Intents on a field are emitted in a fixed, alphabetical order.
 //! * Two-space indentation; one blank line between models; no trailing spaces.
 
-use crate::ast::{Ast, Field, Model, ModelIndex};
+use crate::ast::{Ast, Field, Model, ModelIndex, View};
 use crate::types::FieldType;
 
 /// Format an already-parsed, already-validated AST into its canonical source.
@@ -53,11 +53,58 @@ fn render(ast: &Ast) -> String {
         out.push_str(&render_fields(m, ast));
         out.push_str(&render_indexes(m));
     }
-    // Each model block ends in a single newline; the inter-model separator
-    // above produced exactly one blank line between blocks. No extra trailing
+    // Views (read-models) are emitted after the models, each on its own block
+    // separated by a blank line, sorted by name for determinism.
+    let views = render_views(ast);
+    if !views.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&views);
+    }
+    // Each block ends in a single newline; the inter-block separator above
+    // produced exactly one blank line between blocks. No extra trailing
     // newline is needed, so just trim a single trailing blank line if present.
     while out.ends_with("\n\n") {
         out.pop();
+    }
+    out
+}
+
+/// Render all top-level `view` declarations, sorted by name for determinism.
+/// The projection (`field type, ...`) is optional; `-materialized` is appended
+/// when set; the query body is emitted verbatim (indented on continuation
+/// lines) after the `=` separator.
+fn render_views(ast: &Ast) -> String {
+    let mut views: Vec<&View> = ast.views().collect();
+    views.sort_by_key(|v| v.name.clone());
+    let mut out = String::new();
+    for (i, v) in views.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("view ");
+        out.push_str(&v.name);
+        if !v.fields.is_empty() {
+            out.push(' ');
+            let proj: Vec<String> = v
+                .fields
+                .iter()
+                .map(|f| format!("{} {}", f.name, f.ty))
+                .collect();
+            out.push_str(&proj.join(", "));
+        }
+        if v.materialized {
+            out.push_str(" -materialized");
+        }
+        out.push_str(" =\n");
+        // Indent every line of the query body by two spaces so it round-trips
+        // as a continuation block.
+        for line in v.query.lines() {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
+        }
     }
     out
 }

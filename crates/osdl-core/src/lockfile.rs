@@ -5,7 +5,7 @@
 //! identical lockfiles (REQ-NFR-DET-001), which is what makes auto-diffing
 //! migrations reliable.
 
-use crate::ast::{Ast, LockField, LockModel};
+use crate::ast::{Ast, LockField, LockModel, LockView};
 use crate::errors::OsdlError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,6 +19,8 @@ pub struct Lockfile {
     pub checksum: String,
     /// The schema model projection (already deterministically sorted).
     pub models: Vec<LockModel>,
+    /// The view (read-model) projection (already deterministically sorted).
+    pub views: Vec<LockView>,
 }
 
 impl Lockfile {
@@ -27,11 +29,13 @@ impl Lockfile {
     /// Build a lockfile from a validated AST.
     pub fn from_ast(ast: &Ast) -> Self {
         let models = ast.to_lock();
-        let checksum = compute_checksum(&models);
+        let views = ast.to_lock_views();
+        let checksum = compute_checksum(&models, &views);
         Self {
             version: Self::VERSION,
             checksum,
             models,
+            views,
         }
     }
 
@@ -49,18 +53,24 @@ impl Lockfile {
     /// The canonical checksum of the current projection (re-computed, ignoring
     /// the stored value) — used to decide whether a re-build changed anything.
     pub fn current_checksum(&self) -> String {
-        compute_checksum(&self.models)
+        compute_checksum(&self.models, &self.views)
     }
 
     pub fn model_by_name(&self, name: &str) -> Option<&LockModel> {
         self.models.iter().find(|m| m.name == name)
     }
+
+    /// Find a view (read-model) projection by name.
+    pub fn view_by_name(&self, name: &str) -> Option<&LockView> {
+        self.views.iter().find(|v| v.name == name)
+    }
 }
 
-/// Deterministically hash the model projection. Sorting happens inside
-/// [`Ast::to_lock`], so we simply hash the canonical JSON.
-fn compute_checksum(models: &[LockModel]) -> String {
-    let canonical = serde_json::to_string(models).expect("LockModel is serializable");
+/// Deterministically hash the model + view projection. Sorting happens inside
+/// [`Ast::to_lock`] and [`Ast::to_lock_views`], so we simply hash the canonical JSON.
+fn compute_checksum(models: &[LockModel], views: &[LockView]) -> String {
+    let canonical =
+        serde_json::to_string(&(models, views)).expect("LockModel/LockView are serializable");
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();

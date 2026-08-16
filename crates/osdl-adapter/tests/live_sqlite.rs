@@ -29,6 +29,7 @@ async fn applies_create_and_add_field_to_live_sqlite() {
             indexes: vec![],
             primary_key: vec![],
         }],
+        views: vec![],
     };
 
     // Plan = create the model.
@@ -106,6 +107,7 @@ async fn applies_reference_as_foreign_key() {
                 primary_key: vec![],
             },
         ],
+        views: vec![],
     };
     let plan = MigrationPlan {
         ops: vec![

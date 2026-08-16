@@ -377,6 +377,7 @@ impl SchemaAdapter for MongoAdapter {
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![],
+            views: vec![],
         };
         let current = current.unwrap_or(&empty);
         let mut applied = Vec::new();

@@ -33,7 +33,24 @@ line    = { indent ~ body ~ newline }
 // matching only their alphabetic prefix. Model names are also emitted as
 // `Word` tokens and the parser accepts either `Name` or `Word` for a
 // top-level model/known-model declaration.
-body    = { use_stmt | type_decl | word ~ (sp ~ token)* | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | doc_comment | "" }
+body    = { use_stmt | type_decl | view_line | word ~ (sp? ~ token)* | name ~ (sp? ~ token)* | token ~ (sp? ~ token)* | comment_part | doc_comment | "" }
+
+// A view (read-model) declaration: `view Name (field type, ...) [-materialized] = QUERY`.
+// The projection (before `=`) is structured; the QUERY (after `=`) is free-form
+// SQL/aggregation text captured verbatim (including `*`, `.`, `(`, `)`), so it
+// never needs to satisfy the structured `word`/`reference` tokenizer.
+view_line = { view_kw ~ sp ~ view_head ~ sp? ~ equals ~ sp? ~ view_query }
+view_kw   = @{ "view" }
+// name + optional projection fields + optional `-materialized`, up to the `=`.
+// Uses a restricted `view_word` (identifiers only, no `=`) so the separator is
+// never swallowed by the projection; commas between projection fields are
+// skipped.
+view_head = { (sp? ~ (view_flag | view_word | comma))* }
+view_word = @{ ident_char+ }
+comma     = @{ "," }
+view_flag = @{ "-" ~ "materialized" }
+// Everything after the first `=` to end-of-line is the query (raw).
+view_query = @{ (!newline_char ~ ANY)* }
 
 // A module import: `use path::to::module` (unquoted, `::`-separated). Resolved
 // by the project loader into additional source files merged into one AST.
@@ -68,10 +85,11 @@ reference = @{ ident ~ "." ~ ident }
 quoted  = @{ "\"" ~ quoted_inner ~ "\"" }
 quoted_inner = @{ (!"\"" ~ (!newline_char ~ ANY))* }
 // `word` carries type names, relation targets, `-enum` value lists
-// (which may contain commas, e.g. `active,inactive`), and `config`-block
+// (which may contain commas, e.g. `active,inactive`), `config`-block
 // keys/values (which may contain dashes, e.g. `default-type`, and an
-// equals sign, e.g. `field=deleted_at`).
-word    = @{ ident_char ~ (ident_char | "," | "-" | "=")* }
+// equals sign, e.g. `field=deleted_at`), and view-query separators
+// (a lone `=` tokenizes as `Word("=")` so `view V = SELECT ...` parses).
+word    = @{ ("," | "=" | ident_char) ~ (ident_char | "," | "-" | "=")* }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident      = @{ ident_char+ }
