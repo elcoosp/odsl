@@ -131,13 +131,12 @@ fn build_model_schema(model: &LockModel, ast: &Ast) -> Value {
             schema["enum"] = json!(variants);
         }
 
-        if has_intent(f, "-null") {
-            if let Some(obj) = schema.as_object_mut()
-                && let Some(Value::String(t)) = obj.get("type")
-            {
-                let t = t.clone();
-                obj.insert("type".into(), json!([t, "null"]));
-            }
+        if has_intent(f, "-null")
+            && let Some(obj) = schema.as_object_mut()
+            && let Some(Value::String(t)) = obj.get("type")
+        {
+            let t = t.clone();
+            obj.insert("type".into(), json!([t, "null"]));
         }
 
         if let Some(obj) = schema.as_object_mut() {

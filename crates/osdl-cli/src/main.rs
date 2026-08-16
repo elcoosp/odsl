@@ -1133,7 +1133,7 @@ fn cmd_erd(
     format: &str,
     out: Option<&std::path::Path>,
 ) -> Result<(), OsdlError> {
-    let format = ErdFormat::from_str(format).ok_or_else(|| {
+    let format = ErdFormat::from_cli(format).ok_or_else(|| {
         io_err(format!(
             "unknown ERD format `{format}` (expected `mermaid` or `dbml`)"
         ))

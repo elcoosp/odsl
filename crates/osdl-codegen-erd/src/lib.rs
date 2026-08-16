@@ -19,7 +19,7 @@ pub enum ErdFormat {
 
 impl ErdFormat {
     /// Parse a CLI `--format` value (case-insensitive, tolerant of `-`/`_`).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_cli(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().replace(['-', '_'], "").as_str() {
             "mermaid" => Some(ErdFormat::Mermaid),
             "dbml" | "dbdiagram" => Some(ErdFormat::Dbml),
@@ -281,9 +281,9 @@ Post
 
     #[test]
     fn round_trip_format_parse() {
-        assert_eq!(ErdFormat::from_str("mermaid"), Some(ErdFormat::Mermaid));
-        assert_eq!(ErdFormat::from_str("DBML"), Some(ErdFormat::Dbml));
-        assert_eq!(ErdFormat::from_str("db-diagram"), Some(ErdFormat::Dbml));
-        assert_eq!(ErdFormat::from_str("svg"), None);
+        assert_eq!(ErdFormat::from_cli("mermaid"), Some(ErdFormat::Mermaid));
+        assert_eq!(ErdFormat::from_cli("DBML"), Some(ErdFormat::Dbml));
+        assert_eq!(ErdFormat::from_cli("db-diagram"), Some(ErdFormat::Dbml));
+        assert_eq!(ErdFormat::from_cli("svg"), None);
     }
 }

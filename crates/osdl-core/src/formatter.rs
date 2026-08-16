@@ -179,7 +179,9 @@ mod tests {
     use crate::types::{FieldType, Intent, ScalarType};
 
     /// Build an `Ast` from a map of (model -> (field, type_keyword, intents)).
-    fn build(spec: &[(&str, &[(&str, ScalarType, &[Intent])])]) -> Ast {
+    type FieldSpec<'a> = (&'a str, ScalarType, &'a [Intent]);
+    type ModelSpec<'a> = (&'a str, &'a [FieldSpec<'a>]);
+    fn build(spec: &[ModelSpec<'_>]) -> Ast {
         let mut ast = Ast::new();
         for (mname, fields) in spec {
             let mut m = Model {

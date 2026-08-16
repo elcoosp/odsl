@@ -91,23 +91,17 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     // fields declared earlier in the file, so gather them up front).
     let mut custom_types: std::collections::HashMap<String, CustomType> = Default::default();
     for pl in &parsed {
-        if pl.indent == 0 {
-            if let Some(RawToken::TypeDecl { name, rhs }) = pl.tokens.first() {
-                let ct = custom_type_from_tokens(
-                    name,
-                    rhs,
-                    src,
-                    pl.byte_start,
-                    pl.byte_end,
-                    pl.line_no,
-                )?
-                .ok_or_else(|| {
-                    OsdlError::Parse(ParseError::new(format!(
-                        "invalid custom type declaration for `{name}`"
-                    )))
-                })?;
-                custom_types.insert(name.clone(), ct);
-            }
+        if pl.indent == 0
+            && let Some(RawToken::TypeDecl { name, rhs }) = pl.tokens.first()
+        {
+            let ct =
+                custom_type_from_tokens(name, rhs, src, pl.byte_start, pl.byte_end, pl.line_no)?
+                    .ok_or_else(|| {
+                        OsdlError::Parse(ParseError::new(format!(
+                            "invalid custom type declaration for `{name}`"
+                        )))
+                    })?;
+            custom_types.insert(name.clone(), ct);
         }
     }
 
@@ -177,8 +171,10 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 add_field_from_tokens(
                     &mut model,
                     &field_tokens,
-                    &known_models,
-                    &custom_types,
+                    &FieldEnv {
+                        known_models: &known_models,
+                        custom_types: &custom_types,
+                    },
                     pl.line_no,
                     pl.byte_start,
                     pl.byte_end,
@@ -210,8 +206,10 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
             let (deprecated, _) = add_field_from_tokens(
                 m,
                 &pl.tokens,
-                &known_models,
-                &custom_types,
+                &FieldEnv {
+                    known_models: &known_models,
+                    custom_types: &custom_types,
+                },
                 pl.line_no,
                 pl.byte_start,
                 pl.byte_end,
@@ -367,11 +365,17 @@ fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
     true
 }
 
+/// Shared lookup context for field parsing: the set of known model names and
+/// the custom-type table collected during the pre-pass.
+struct FieldEnv<'a> {
+    known_models: &'a HashSet<String>,
+    custom_types: &'a std::collections::HashMap<String, CustomType>,
+}
+
 fn add_field_from_tokens(
     model: &mut Model,
     tokens: &[RawToken],
-    known_models: &HashSet<String>,
-    custom_types: &std::collections::HashMap<String, CustomType>,
+    env: &FieldEnv<'_>,
     line_no: usize,
     byte_start: usize,
     byte_end: usize,
@@ -553,7 +557,7 @@ fn add_field_from_tokens(
                     m2m_target = Some(w.trim().to_string());
                     continue;
                 }
-                if let Some(ct) = custom_types.get(w) {
+                if let Some(ct) = env.custom_types.get(w) {
                     // This field is declared with a custom type: expand to its
                     // base scalar and inherit its intents/check. The field
                     // remains a normal scalar but carries the custom-type name.
@@ -580,7 +584,7 @@ fn add_field_from_tokens(
                     ty = Some(FieldType::InferredRef(format!("relation:{target}")));
                 } else if let Some(s) = ScalarType::from_keyword(w) {
                     ty = Some(FieldType::Scalar(s));
-                } else if known_models.contains(w) {
+                } else if env.known_models.contains(w) {
                     ty = Some(FieldType::Ref(Reference {
                         model: w.clone(),
                         field: "id".into(),
@@ -619,7 +623,7 @@ fn add_field_from_tokens(
 
     let ty = match ty {
         Some(t) => t,
-        None => infer_field_type(&name, known_models, &model.name),
+        None => infer_field_type(&name, env.known_models, &model.name),
     };
 
     model.add_field(Field {

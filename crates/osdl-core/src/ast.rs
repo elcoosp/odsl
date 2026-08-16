@@ -513,7 +513,7 @@ mod tests {
         let idx = ast.add_model(user);
         assert_eq!(ast.model_by_name("User"), Some(idx));
         let u = &ast.models[idx];
-        assert_eq!(u.field_by_name("id").is_some(), true);
+        assert!(u.field_by_name("id").is_some());
     }
 
     #[test]

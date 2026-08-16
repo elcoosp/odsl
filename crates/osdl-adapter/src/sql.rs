@@ -654,11 +654,7 @@ mod tests {
             checksum: String::new(),
             models: vec![user, post],
         };
-        let sql = create_table_sql(
-            SqlDialect::Postgres,
-            &lf.model_by_name("Post").unwrap(),
-            &lf,
-        );
+        let sql = create_table_sql(SqlDialect::Postgres, lf.model_by_name("Post").unwrap(), &lf);
         // INTEGER FK (matching the int PK), not UUID.
         assert!(
             sql.contains("\"author\" INTEGER REFERENCES \"users\"(\"id\")"),

@@ -188,7 +188,7 @@ fn resolves_and_merges_modules_via_use() {
     std::fs::write(&user_mod, "User\n  id uuid -pk\n  email string -uniq\n").unwrap();
     std::fs::write(&invoice, "Invoice\n  id uuid -pk\n  total int\n").unwrap();
     std::fs::write(
-        &dir.join("schema.osdl"),
+        dir.join("schema.osdl"),
         "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n  total int\n",
     )
     .unwrap();
@@ -212,9 +212,9 @@ fn resolves_and_merges_modules_via_use() {
 fn use_detects_duplicate_model_across_files() {
     let dir = std::env::temp_dir().join(format!("osdl-use-dup-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    std::fs::write(&dir.join("a.osdl"), "User\n  id uuid -pk\n").unwrap();
-    std::fs::write(&dir.join("b.osdl"), "User\n  id uuid -pk\n").unwrap();
-    std::fs::write(&dir.join("schema.osdl"), "use a\nuse b\n").unwrap();
+    std::fs::write(dir.join("a.osdl"), "User\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("b.osdl"), "User\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("schema.osdl"), "use a\nuse b\n").unwrap();
     let err = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap_err();
     assert!(matches!(err, OsdlError::Parse(_)));
     let _ = std::fs::remove_dir_all(&dir);
@@ -225,9 +225,9 @@ fn use_cycle_is_safe() {
     // A cycle of `use` must not infinite-loop; it resolves to a merged AST.
     let dir = std::env::temp_dir().join(format!("osdl-use-cycle-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    std::fs::write(&dir.join("a.osdl"), "use b\nA\n  id uuid -pk\n").unwrap();
-    std::fs::write(&dir.join("b.osdl"), "use a\nB\n  id uuid -pk\n").unwrap();
-    std::fs::write(&dir.join("schema.osdl"), "use a\n").unwrap();
+    std::fs::write(dir.join("a.osdl"), "use b\nA\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("b.osdl"), "use a\nB\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("schema.osdl"), "use a\n").unwrap();
     let project = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap();
     assert!(project.ast.model_by_name("A").is_some());
     assert!(project.ast.model_by_name("B").is_some());
@@ -317,7 +317,7 @@ User
     let ast = parse(src).unwrap();
     let user = find_model(&ast, "User");
     assert_eq!(ast.model_doc("User"), Some("A registered account holder."));
-    let email = find_field(user, "email");
+    let _email = find_field(user, "email");
     assert_eq!(
         ast.field_doc("User", "email"),
         Some("The user's primary email address.")
@@ -344,13 +344,13 @@ fn parses_deprecated_field_directive() {
 ";
     let ast = parse(src).unwrap();
     let user = find_model(&ast, "User");
-    let email = find_field(user, "email");
+    let _email = find_field(user, "email");
     assert_eq!(
         ast.field_deprecation("User", "email"),
         Some("use contactEmail instead")
     );
     // The replacement field is not deprecated.
-    let contact = find_field(user, "contactEmail");
+    let _contact = find_field(user, "contactEmail");
     assert_eq!(ast.field_deprecation("User", "contactEmail"), None);
 }
 

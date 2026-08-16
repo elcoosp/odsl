@@ -933,8 +933,8 @@ mod tests {
     fn cli_style_addfield_index_via_from_ast() {
         // Mirrors cmd_migrate_create: parse -> Lockfile::from_ast -> render.
         let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
-        let mut ast = osdl_parser::parse(src).unwrap();
-        osdl_core::Validator::validate(&mut ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
+        let ast = osdl_parser::parse(src).unwrap();
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
         let target = Lockfile::from_ast(&ast);
         // Sanity: the parsed target carries -index on name.
         let name_intents = target
@@ -971,8 +971,8 @@ mod tests {
     fn cli_style_full_pipeline_index() {
         // Full cmd_migrate_create path: parse -> plan_migration(empty, ast) -> render.
         let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
-        let mut ast = osdl_parser::parse(src).unwrap();
-        osdl_core::Validator::validate(&mut ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
+        let ast = osdl_parser::parse(src).unwrap();
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
         let current = Lockfile {
             version: Lockfile::VERSION,
             checksum: String::new(),
