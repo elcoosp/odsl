@@ -68,6 +68,9 @@ pub enum CompileErrorKind {
     UnresolvedReference { from: String, target: String },
     /// A view (read-model) declaration is malformed or unsupported.
     ViewError { view: String, reason: String },
+    /// A seed-data declaration is malformed or references an unknown model /
+    /// column.
+    SeedError { model: String, reason: String },
     /// REQ-FUNC-006: cyclic dependency between models.
     CyclicDependency { models: Vec<String> },
     /// REQ-FUNC-007: intent flag incompatible with field type.
@@ -100,6 +103,9 @@ impl fmt::Display for CompileErrorKind {
             }
             CompileErrorKind::ViewError { view, reason } => {
                 write!(f, "View `{view}` is invalid: {reason}")
+            }
+            CompileErrorKind::SeedError { model, reason } => {
+                write!(f, "Seed for `{model}` is invalid: {reason}")
             }
             CompileErrorKind::CyclicDependency { models } => {
                 write!(

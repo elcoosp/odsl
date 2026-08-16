@@ -554,7 +554,8 @@ fn describe_op(op: &osdl_migrator::MigrationOp) -> String {
         osdl_migrator::MigrationOp::CreateModel { .. }
         | osdl_migrator::MigrationOp::AddField { .. }
         | osdl_migrator::MigrationOp::CreateView { .. }
-        | osdl_migrator::MigrationOp::DropView { .. } => String::new(),
+        | osdl_migrator::MigrationOp::DropView { .. }
+        | osdl_migrator::MigrationOp::SeedData { .. } => String::new(),
     }
 }
 
@@ -562,6 +563,7 @@ fn cmd_migrate_plan(input: &std::path::Path, target: Target, apply: bool) -> Res
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
@@ -591,6 +593,7 @@ fn cmd_migrate_up(
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
@@ -682,6 +685,7 @@ fn cmd_migrate_create(
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
@@ -739,6 +743,7 @@ fn cmd_migrate_down(
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
@@ -833,6 +838,7 @@ fn cmd_migrate_status(
     let ast = load_ast(input, target)?;
     let lock_path = input.with_file_name("osdl.lock");
     let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],
@@ -914,6 +920,7 @@ fn cmd_migrate_test(
     let ast = load_ast(input, target)?;
     let target_lock = Lockfile::from_ast(&ast);
     let empty = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![],

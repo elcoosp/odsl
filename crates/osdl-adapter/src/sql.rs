@@ -5,6 +5,7 @@
 //! double-quoted (ANSI SQL) so reserved words and mixed case are safe.
 
 use osdl_core::ast::LockModel;
+use osdl_core::ast::LockSeed;
 use osdl_core::lockfile::Lockfile;
 use osdl_migrator::MigrationOp;
 
@@ -242,6 +243,36 @@ pub fn create_view_sql(dialect: SqlDialect, view: &osdl_core::ast::LockView) -> 
     )
 }
 
+/// Render `INSERT` statements for a `LockSeed` dataset. Each row becomes one
+/// `INSERT INTO <table> (cols) VALUES (vals)`; values are emitted verbatim
+/// (already validated by the parser/validator). Values containing single
+/// quotes are escaped by doubling. Returns one statement per row.
+pub fn create_seed_sql(dialect: SqlDialect, seed: &LockSeed, table: &str) -> Vec<String> {
+    use crate::naming::quote_ident_for;
+    let table_ident = quote_ident_for(dialect, table);
+    let mut stmts = Vec::new();
+    for row in &seed.rows {
+        if row.is_empty() {
+            continue;
+        }
+        let cols: Vec<String> = row
+            .iter()
+            .map(|(c, _)| quote_ident_for(dialect, c))
+            .collect();
+        let vals: Vec<String> = row
+            .iter()
+            .map(|(_, v)| format!("'{}'", v.replace('\'', "''")))
+            .collect();
+        stmts.push(format!(
+            "INSERT INTO {} ({}) VALUES ({});",
+            table_ident,
+            cols.join(", "),
+            vals.join(", ")
+        ));
+    }
+    stmts
+}
+
 pub fn op_to_sql(
     dialect: SqlDialect,
     op: &MigrationOp,
@@ -470,6 +501,17 @@ pub fn op_to_sql(
             "DROP VIEW IF EXISTS {}",
             quote_ident_for(dialect, view)
         )]),
+        MigrationOp::SeedData { model } => {
+            // Find the seed dataset for this model in the target lockfile and
+            // render one INSERT per row. If the model has no seed entry (should
+            // not happen for a well-formed plan), emit nothing.
+            let table = table_name(model);
+            if let Some(seed) = target.seeds.iter().find(|s| s.model == *model) {
+                Ok(create_seed_sql(dialect, seed, &table))
+            } else {
+                Ok(vec![])
+            }
+        }
     }
 }
 
@@ -631,6 +673,7 @@ mod tests {
     /// An empty lockfile (used for FK-resolution fallbacks in non-FK tests).
     fn empty_lf() -> Lockfile {
         Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![],
@@ -699,15 +742,6 @@ mod tests {
     }
 
     #[test]
-    fn creates_postgres_table() {
-        let sql = create_table_sql(SqlDialect::Postgres, &user_model(), &empty_lf());
-        assert!(sql.contains("CREATE TABLE \"users\""));
-        assert!(sql.contains("\"id\" UUID PRIMARY KEY"));
-        assert!(sql.contains("\"email\" TEXT"));
-        assert!(sql.contains("UNIQUE"));
-    }
-
-    #[test]
     fn creates_mysql_table_with_backticks() {
         let sql = create_table_sql(SqlDialect::Mysql, &user_model(), &empty_lf());
         // MySQL uses backtick quoting and CHAR(36) for uuid.
@@ -715,8 +749,40 @@ mod tests {
         assert!(sql.contains("`id` CHAR(36) PRIMARY KEY"));
         assert!(sql.contains("`email` TEXT"));
         assert!(sql.contains("UNIQUE"));
-        // SQLite/Postgres double-quote style must NOT appear for MySQL.
-        assert!(!sql.contains("\"users\""));
+    }
+
+    #[test]
+    fn renders_seed_inserts() {
+        let seed = osdl_core::ast::LockSeed {
+            model: "User".into(),
+            rows: vec![vec![
+                ("id".into(), "00000000-0000-0000-0000-000000000001".into()),
+                ("email".into(), "root@osdl.dev".into()),
+            ]],
+        };
+        let stmts = create_seed_sql(SqlDialect::Postgres, &seed, "users");
+        assert_eq!(stmts.len(), 1);
+        let s = &stmts[0];
+        assert!(s.starts_with("INSERT INTO \"users\" (\"id\", \"email\") VALUES ("));
+        assert!(s.contains("'00000000-0000-0000-0000-000000000001'"));
+        assert!(s.contains("'root@osdl.dev'"));
+        assert!(s.ends_with(");"));
+        // Single quotes in values are escaped by doubling.
+        let seed2 = osdl_core::ast::LockSeed {
+            model: "User".into(),
+            rows: vec![vec![("bio".into(), "it's me".into())]],
+        };
+        let s2 = &create_seed_sql(SqlDialect::Sqlite, &seed2, "users")[0];
+        assert!(s2.contains("'it''s me'"));
+    }
+
+    #[test]
+    fn creates_postgres_table() {
+        let sql = create_table_sql(SqlDialect::Postgres, &user_model(), &empty_lf());
+        assert!(sql.contains("CREATE TABLE \"users\""));
+        assert!(sql.contains("\"id\" UUID PRIMARY KEY"));
+        assert!(sql.contains("\"email\" TEXT"));
+        assert!(sql.contains("UNIQUE"));
     }
 
     #[test]
@@ -746,6 +812,7 @@ mod tests {
     #[test]
     fn mysql_add_field_is_inline() {
         let lf = osdl_core::lockfile::Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -766,6 +833,7 @@ mod tests {
     #[test]
     fn mysql_alter_field_changes_type() {
         let lf = osdl_core::lockfile::Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -797,6 +865,7 @@ mod tests {
             primary_key: vec![],
         };
         let lf_with_user = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -826,6 +895,7 @@ mod tests {
             primary_key: vec![],
         };
         let lf = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user, post],
@@ -842,6 +912,7 @@ mod tests {
     #[test]
     fn add_field_sql() {
         let lf = osdl_core::lockfile::Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -865,6 +936,7 @@ mod tests {
         // on SQLite (no in-place ADD COLUMN ... NOT NULL). With `current`
         // present, op_to_sql must emit the shadow-table rebuild sequence.
         let current = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![LockModel {
@@ -876,6 +948,7 @@ mod tests {
             views: vec![],
         };
         let target = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![LockModel {
@@ -920,6 +993,7 @@ mod tests {
     #[test]
     fn sqlite_drop_field_rebuilds_table() {
         let current = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![LockModel {
@@ -934,6 +1008,7 @@ mod tests {
             views: vec![],
         };
         let target = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![LockModel {

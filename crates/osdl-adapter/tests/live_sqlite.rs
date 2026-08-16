@@ -17,6 +17,7 @@ async fn applies_create_and_add_field_to_live_sqlite() {
 
     // Target schema: User(id uuid -pk, email string -uniq, age int -null)
     let target = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![LockModel {
@@ -88,6 +89,7 @@ async fn applies_reference_as_foreign_key() {
     let url = format!("sqlite:///{}?mode=rwc", db_path.display());
 
     let target = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![

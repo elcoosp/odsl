@@ -10,7 +10,9 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex, SchemaConfig, View, ViewField};
+use osdl_core::ast::{
+    Ast, CustomType, Field, Model, ModelIndex, SchemaConfig, Seed, SeedRow, View, ViewField,
+};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, FkAction, Intent, Reference, ScalarType};
 use pest::Parser;
@@ -119,6 +121,12 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     // are query continuations (not fields/models).
     let mut parsing_view = false;
     let mut current_view: Option<View> = None;
+    // Top-level `seed` block accumulation (roadmap Phase 1.6). A seed's rows
+    // live on following indented continuation lines; `current_seed` holds the
+    // in-progress seed and `parsing_seed` marks that subsequent indented lines
+    // are seed rows (not fields/models).
+    let mut parsing_seed = false;
+    let mut current_seed: Option<Seed> = None;
     // Doc comment (`///`) pending attachment to the next model/field declaration.
     let mut pending_doc: Option<String> = None;
 
@@ -135,6 +143,24 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
         // Comment-only / blank lines carry no tokens — skip them.
         if pl.tokens.is_empty() {
             continue;
+        }
+        // While parsing a `seed`, indented lines are seed rows. A new
+        // top-level (indent 0) declaration ends the seed and is handled by the
+        // normal logic below in the *same* iteration.
+        if parsing_seed {
+            if pl.indent == 0 {
+                if let Some(s) = current_seed.take() {
+                    ast.add_seed(s);
+                }
+                parsing_seed = false;
+                // Fall through to handle `pl` as a normal top-level declaration.
+            } else {
+                if let Some(s) = current_seed.as_mut() {
+                    let row = parse_seed_row(&pl.raw, pl.line_no)?;
+                    s.rows.push(row);
+                }
+                continue;
+            }
         }
         // While parsing a `view`, indented lines are query continuations. A new
         // top-level (indent 0) declaration ends the view and is handled by the
@@ -186,6 +212,31 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 let view = parse_view_decl(&pl.tokens, pl.line_no, &pl.raw)?;
                 current_view = Some(view);
                 parsing_view = true;
+                continue;
+            }
+            // A `seed` declaration (roadmap Phase 1.6): `seed Model`. The rows
+            // follow on indented continuation lines.
+            if let Some(RawToken::Name(n) | RawToken::Word(n)) = pl.tokens.first()
+                && n == "seed"
+            {
+                if let Some(m) = current_model.take() {
+                    ast.add_model(m);
+                }
+                let model = pl
+                    .tokens
+                    .get(1)
+                    .map(|t| match t {
+                        RawToken::Name(m) | RawToken::Word(m) => m.clone(),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default();
+                let seed = Seed {
+                    model,
+                    rows: vec![],
+                    line: pl.line_no,
+                };
+                current_seed = Some(seed);
+                parsing_seed = true;
                 continue;
             }
             // A `use` declaration is not a model.
@@ -308,6 +359,10 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     // line is the final line of the file).
     if let Some(v) = current_view.take() {
         ast.add_view(v);
+    }
+    // Finalize any seed still open at EOF.
+    if let Some(s) = current_seed.take() {
+        ast.add_seed(s);
     }
     // Store the accumulated `config` block on the AST.
     ast.config = config;
@@ -611,6 +666,46 @@ fn parse_view_decl(tokens: &[RawToken], line_no: usize, raw: &str) -> Result<Vie
         materialized,
         line: line_no,
     })
+}
+
+/// Parse a single seed row from a raw continuation line.
+///
+/// A row is a whitespace-separated list of `column=value` pairs. The value may
+/// be a quoted string (`email="a@b.c"`) — the surrounding quotes are stripped —
+/// or a bare token (`active=true`, `age=21`, `id=000...001`). Values are kept
+/// verbatim (untyped) for emission into `INSERT`/Mongo-insert statements.
+fn parse_seed_row(raw: &str, line_no: usize) -> Result<SeedRow, OsdlError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(SeedRow::default());
+    }
+    let mut columns: Vec<(String, String)> = Vec::new();
+    for part in trimmed.split_whitespace() {
+        match part.split_once('=') {
+            Some((col, val)) => {
+                let col = col.trim().to_string();
+                if col.is_empty() {
+                    return Err(OsdlError::Parse(ParseError::new(format!(
+                        "seed row column is empty before `=` on line {line_no}"
+                    ))));
+                }
+                let val = val.trim();
+                // Strip a single layer of surrounding double quotes.
+                let val = if val.len() >= 2 && val.starts_with('"') && val.ends_with('"') {
+                    val[1..val.len() - 1].to_string()
+                } else {
+                    val.to_string()
+                };
+                columns.push((col, val));
+            }
+            None => {
+                return Err(OsdlError::Parse(ParseError::new(format!(
+                    "seed row entry `{part}` is missing `=` (expected `column=value`) on line {line_no}"
+                ))));
+            }
+        }
+    }
+    Ok(SeedRow { columns })
 }
 
 /// Shared lookup context for field parsing: the set of known model names and
@@ -1317,6 +1412,19 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                                 tokens.push(RawToken::Word(query));
                             }
                         }
+                        Rule::seed_line => {
+                            // `seed Model`. Reconstruct the same token stream
+                            // `parse_seed_decl` expects: `seed`, then the model
+                            // name. The rows live on following continuation lines
+                            // and are captured verbatim from `pl.raw` by the
+                            // main loop, so they need no tokenization here.
+                            tokens.push(RawToken::Word("seed".to_string()));
+                            for s in b.into_inner() {
+                                if s.as_rule() == Rule::ident {
+                                    tokens.push(RawToken::Word(s.as_str().to_string()));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1476,5 +1584,55 @@ mod enum_tests {
             f.polymorphic_targets,
             vec!["Post".to_string(), "Video".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_seed_rows() {
+        let src = "User\n  id uuid -pk\n  email string\n\
+seed User\n  id=00000000-0000-0000-0000-000000000001 email=\"root@osdl.dev\"\n  id=00000000-0000-0000-0000-000000000002 email=\"user@osdl.dev\"\n";
+        let ast = parse(src).unwrap();
+        let seed = ast.seed_by_name("User").expect("seed present");
+        assert_eq!(seed.rows.len(), 2);
+        let r0 = &seed.rows[0];
+        assert_eq!(r0.columns.len(), 2);
+        assert_eq!(
+            r0.columns,
+            vec![
+                (
+                    "id".to_string(),
+                    "00000000-0000-0000-0000-000000000001".to_string()
+                ),
+                ("email".to_string(), "root@osdl.dev".to_string()),
+            ]
+        );
+        // Column order is preserved within a row; the second row is distinct.
+        let r1 = &seed.rows[1];
+        assert_eq!(r1.columns[1].1, "user@osdl.dev");
+    }
+
+    #[test]
+    fn seed_with_multiple_columns_and_bare_values() {
+        let src = "Post\n  id uuid -pk\n  title string\n  published bool\n\
+seed Post\n  id=abc title=\"Hello\" published=true\n";
+        let ast = parse(src).unwrap();
+        let seed = ast.seed_by_name("Post").expect("seed present");
+        assert_eq!(seed.rows.len(), 1);
+        let cols = &seed.rows[0].columns;
+        assert_eq!(
+            cols,
+            &vec![
+                ("id".to_string(), "abc".to_string()),
+                ("title".to_string(), "Hello".to_string()),
+                ("published".to_string(), "true".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn seed_requires_equals_in_row() {
+        let src = "User\n  id uuid -pk\n\
+seed User\n  id=1 brokenrow\n";
+        // The malformed row (no `=`) must surface as a parse error.
+        assert!(parse(src).is_err());
     }
 }

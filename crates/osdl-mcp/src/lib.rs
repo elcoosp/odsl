@@ -392,6 +392,7 @@ fn tool_migrate_preview(args: &Value) -> Value {
             Err(e) => return json!({ "error": format!("reading current lockfile {p}: {e}") }),
         },
         None => osdl_core::lockfile::Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![],

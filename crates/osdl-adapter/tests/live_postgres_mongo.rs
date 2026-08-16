@@ -43,6 +43,7 @@ async fn postgres_apply_create_model_live() {
     };
 
     let target = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![LockModel {
@@ -82,6 +83,7 @@ async fn mongo_apply_create_model_live() {
     };
 
     let target = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![LockModel {

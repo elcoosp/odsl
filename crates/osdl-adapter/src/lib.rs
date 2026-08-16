@@ -374,6 +374,7 @@ impl SchemaAdapter for MongoAdapter {
     ) -> Result<Vec<String>, AdapterError> {
         // Fall back to an empty baseline when no prior lockfile is supplied.
         let empty = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![],

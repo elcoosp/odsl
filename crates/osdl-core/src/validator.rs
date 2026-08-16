@@ -37,6 +37,7 @@ impl Validator {
         Self::check_model_indexes(ast)?;
         Self::check_m2m_targets(ast)?;
         Self::check_views(ast)?;
+        Self::check_seeds(ast)?;
         if let Some(t) = target {
             Self::check_target_compat(ast, t)?;
             Self::prevent_cycles(ast)?;
@@ -320,6 +321,50 @@ impl Validator {
                             f.name, f.ty
                         ),
                     }));
+                }
+            }
+        }
+        Ok(())
+    }
+    fn check_seeds(ast: &Ast) -> Result<(), OsdlError> {
+        let mut seen = std::collections::HashSet::new();
+        for s in ast.seeds() {
+            if s.model.is_empty() {
+                return Err(OsdlError::compile(CompileErrorKind::SeedError {
+                    model: s.model.clone(),
+                    reason: "seed must target a model (e.g. `seed User`)".into(),
+                }));
+            }
+            if ast.model_by_name(&s.model).is_none() {
+                return Err(OsdlError::compile(CompileErrorKind::SeedError {
+                    model: s.model.clone(),
+                    reason: format!("seed targets unknown model `{}`", s.model),
+                }));
+            }
+            if !seen.insert(s.model.clone()) {
+                return Err(OsdlError::compile(CompileErrorKind::SeedError {
+                    model: s.model.clone(),
+                    reason: "duplicate seed for the same model".into(),
+                }));
+            }
+            for row in &s.rows {
+                if row.columns.is_empty() {
+                    return Err(OsdlError::compile(CompileErrorKind::SeedError {
+                        model: s.model.clone(),
+                        reason: "seed row must declare at least one `column=value`".into(),
+                    }));
+                }
+                for (col, _) in &row.columns {
+                    let exists = ast
+                        .model_by_name(&s.model)
+                        .map(|idx| ast.models[idx].field_by_name(col).is_some())
+                        .unwrap_or(false);
+                    if !exists {
+                        return Err(OsdlError::compile(CompileErrorKind::SeedError {
+                            model: s.model.clone(),
+                            reason: format!("seed row references unknown column `{col}`"),
+                        }));
+                    }
                 }
             }
         }

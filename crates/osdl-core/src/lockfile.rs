@@ -5,7 +5,7 @@
 //! identical lockfiles (REQ-NFR-DET-001), which is what makes auto-diffing
 //! migrations reliable.
 
-use crate::ast::{Ast, LockField, LockModel, LockView};
+use crate::ast::{Ast, LockField, LockModel, LockSeed, LockView};
 use crate::errors::OsdlError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,8 @@ pub struct Lockfile {
     pub models: Vec<LockModel>,
     /// The view (read-model) projection (already deterministically sorted).
     pub views: Vec<LockView>,
+    /// The seed-data projection (already deterministically sorted).
+    pub seeds: Vec<LockSeed>,
 }
 
 impl Lockfile {
@@ -30,12 +32,14 @@ impl Lockfile {
     pub fn from_ast(ast: &Ast) -> Self {
         let models = ast.to_lock();
         let views = ast.to_lock_views();
-        let checksum = compute_checksum(&models, &views);
+        let seeds = ast.to_lock_seeds();
+        let checksum = compute_checksum(&models, &views, &seeds);
         Self {
             version: Self::VERSION,
             checksum,
             models,
             views,
+            seeds,
         }
     }
 
@@ -53,7 +57,7 @@ impl Lockfile {
     /// The canonical checksum of the current projection (re-computed, ignoring
     /// the stored value) — used to decide whether a re-build changed anything.
     pub fn current_checksum(&self) -> String {
-        compute_checksum(&self.models, &self.views)
+        compute_checksum(&self.models, &self.views, &self.seeds)
     }
 
     pub fn model_by_name(&self, name: &str) -> Option<&LockModel> {
@@ -68,9 +72,9 @@ impl Lockfile {
 
 /// Deterministically hash the model + view projection. Sorting happens inside
 /// [`Ast::to_lock`] and [`Ast::to_lock_views`], so we simply hash the canonical JSON.
-fn compute_checksum(models: &[LockModel], views: &[LockView]) -> String {
-    let canonical =
-        serde_json::to_string(&(models, views)).expect("LockModel/LockView are serializable");
+fn compute_checksum(models: &[LockModel], views: &[LockView], seeds: &[LockSeed]) -> String {
+    let canonical = serde_json::to_string(&(models, views, seeds))
+        .expect("LockModel/LockView/LockSeed are serializable");
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let digest = hasher.finalize();

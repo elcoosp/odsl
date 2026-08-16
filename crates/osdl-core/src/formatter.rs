@@ -11,7 +11,7 @@
 //! * Intents on a field are emitted in a fixed, alphabetical order.
 //! * Two-space indentation; one blank line between models; no trailing spaces.
 
-use crate::ast::{Ast, Field, Model, ModelIndex, View};
+use crate::ast::{Ast, Field, Model, ModelIndex, Seed, View};
 use crate::types::FieldType;
 
 /// Format an already-parsed, already-validated AST into its canonical source.
@@ -62,6 +62,15 @@ fn render(ast: &Ast) -> String {
         }
         out.push_str(&views);
     }
+    // Seeds are emitted last, after views, each on its own block separated by a
+    // blank line, sorted by target model name for determinism.
+    let seeds = render_seeds(ast);
+    if !seeds.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&seeds);
+    }
     // Each block ends in a single newline; the inter-block separator above
     // produced exactly one blank line between blocks. No extra trailing
     // newline is needed, so just trim a single trailing blank line if present.
@@ -103,6 +112,44 @@ fn render_views(ast: &Ast) -> String {
         for line in v.query.lines() {
             out.push_str("  ");
             out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Render all top-level `seed` declarations, sorted by target model name for
+/// determinism. Each seed block opens with `seed Model` and emits its rows as
+/// indented `column=value` continuation lines (one row per line, columns
+/// sorted by name within the row for a stable layout).
+fn render_seeds(ast: &Ast) -> String {
+    let mut seeds: Vec<&Seed> = ast.seeds().collect();
+    seeds.sort_by_key(|s| s.model.clone());
+    let mut out = String::new();
+    for (i, s) in seeds.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("seed ");
+        out.push_str(&s.model);
+        out.push('\n');
+        for row in &s.rows {
+            let mut cols = row.columns.clone();
+            cols.sort();
+            let entries: Vec<String> = cols
+                .iter()
+                .map(|(c, v)| {
+                    // Quote values that contain whitespace or would otherwise
+                    // be ambiguous; bare scalar tokens stay unquoted.
+                    if v.contains(char::is_whitespace) {
+                        format!("{c}=\"{v}\"")
+                    } else {
+                        format!("{c}={v}")
+                    }
+                })
+                .collect();
+            out.push_str("  ");
+            out.push_str(&entries.join(" "));
             out.push('\n');
         }
     }
@@ -275,7 +322,7 @@ fn render_indexes(m: &Model) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Ast, Field, Model};
+    use crate::ast::{Ast, Field, Model, Seed, SeedRow};
     use crate::types::{FieldType, Intent, ScalarType};
 
     /// Build an `Ast` from a map of (model -> (field, type_keyword, intents)).
@@ -458,5 +505,40 @@ mod tests {
         assert!(out.contains("  audit created_at,updated_at\n"));
         // The config block precedes the model block.
         assert!(out.find("config").unwrap() < out.find("User").unwrap());
+    }
+
+    #[test]
+    fn formats_seed_block() {
+        let mut ast = build(&[(
+            "User",
+            &[
+                ("id", ScalarType::Uuid, &[Intent::Pk]),
+                ("email", ScalarType::String, &[]),
+            ],
+        )]);
+        ast.add_seed(Seed {
+            model: "User".into(),
+            rows: vec![
+                SeedRow {
+                    columns: vec![
+                        ("id".into(), "00000000-0000-0000-0000-000000000001".into()),
+                        ("email".into(), "root@osdl.dev".into()),
+                    ],
+                },
+                SeedRow {
+                    columns: vec![
+                        ("id".into(), "00000000-0000-0000-0000-000000000002".into()),
+                        ("email".into(), "user@osdl.dev".into()),
+                    ],
+                },
+            ],
+            line: 5,
+        });
+        let out = format_ast(&ast);
+        // The seed block follows the model block.
+        assert!(out.contains("seed User\n"));
+        assert!(out.contains("  id=00000000-0000-0000-0000-000000000001 email=root@osdl.dev"));
+        assert!(out.contains("  id=00000000-0000-0000-0000-000000000002 email=user@osdl.dev"));
+        assert!(out.find("User\n").unwrap() < out.find("seed User").unwrap());
     }
 }

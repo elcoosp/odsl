@@ -70,6 +70,7 @@ fn slugify(plan: &MigrationPlan) -> String {
             }
             MigrationOp::CreateView { view } => format!("create_view_{}", view.to_lowercase()),
             MigrationOp::DropView { view } => format!("drop_view_{}", view.to_lowercase()),
+            MigrationOp::SeedData { model } => format!("seed_{}", model.to_lowercase()),
         })
         .collect();
     parts.sort();
@@ -265,6 +266,9 @@ fn down_sql(
             let v = cur.view_by_name(view)?;
             Some(crate::sql::create_view_sql(dialect, v))
         }
+        // Seed data is inserted, never deleted by a down migration: the down
+        // direction must not destroy data, so we emit no statement.
+        MigrationOp::SeedData { .. } => None,
     }
 }
 
@@ -519,6 +523,14 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                 view
             )]
         }
+        MigrationOp::SeedData { model } => {
+            // Seed inserts are emitted as raw SQL INSERTs in the generated
+            // migration (non-destructive; applied on up only).
+            vec![format!(
+                "        // seed data for `{model}` is applied via raw SQL (INSERT)",
+                model = model
+            )]
+        }
     }
 }
 
@@ -668,6 +680,9 @@ fn seaorm_down_stmt(op: &MigrationOp, target: &Lockfile) -> Option<String> {
         MigrationOp::DropModel { .. } => None,
         MigrationOp::CreateView { .. } => None,
         MigrationOp::DropView { .. } => None,
+        // Seed data has no down statement: the down migration must not delete
+        // data that was inserted during `up`.
+        MigrationOp::SeedData { .. } => None,
     }
 }
 
@@ -807,6 +822,7 @@ mod tests {
 
     fn lf() -> Lockfile {
         Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![LockModel {
@@ -864,6 +880,7 @@ mod tests {
     #[test]
     fn seaorm_migration_emits_foreign_key() {
         let target = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![
@@ -902,6 +919,7 @@ mod tests {
         // A FK field carrying `-ondelete setnull` must render the matching
         // SeaORM ForeignKeyAction, not the historic hard-coded Cascade.
         let target = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![
@@ -951,6 +969,7 @@ mod tests {
     #[test]
     fn seaorm_migration_emits_composite_model_index() {
         let target = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![LockModel {
@@ -991,6 +1010,7 @@ mod tests {
     #[test]
     fn seaorm_migration_emits_secondary_index() {
         let target = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![LockModel {
@@ -1024,6 +1044,7 @@ mod tests {
     #[test]
     fn seaorm_addfield_emits_secondary_index() {
         let target = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![LockModel {
@@ -1102,6 +1123,7 @@ mod tests {
         let ast = osdl_parser::parse(src).unwrap();
         osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
         let current = Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![],
@@ -1127,6 +1149,7 @@ mod tests {
     /// used to exercise down-of-drop / down-of-alter rollback rendering.
     fn current_with_age() -> Lockfile {
         Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![LockModel {
@@ -1145,6 +1168,7 @@ mod tests {
 
     fn target_with_age_bigint() -> Lockfile {
         Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models: vec![LockModel {

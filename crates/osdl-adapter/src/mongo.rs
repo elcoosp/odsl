@@ -6,7 +6,7 @@
 //! `$unset` operator on the validator path.
 
 use mongodb::Database;
-use mongodb::bson::{Document, doc};
+use mongodb::bson::{Bson, Document, doc};
 use mongodb::options::{CreateCollectionOptions, ValidationAction, ValidationLevel};
 use osdl_core::ast::LockModel;
 use osdl_core::lockfile::Lockfile;
@@ -88,6 +88,8 @@ pub enum MongoOp {
     Unset { name: String, field: String },
     /// Drop the collection entirely.
     Drop { name: String },
+    /// Insert seed documents into a collection (fixture data).
+    Insert { name: String, docs: Vec<Document> },
 }
 
 /// Translate a [`MigrationOp`] into the Mongo command(s) required.
@@ -127,6 +129,24 @@ pub fn op_to_mongo(op: &MigrationOp, target: &Lockfile) -> Vec<MongoOp> {
         MigrationOp::CreateView { .. } | MigrationOp::DropView { .. } => {
             // Mongo has no native views; view ops are no-ops for the Mongo adapter.
             vec![]
+        }
+        MigrationOp::SeedData { model } => {
+            // Emit an Insert op carrying each seed row as a BSON document. The
+            // adapter applies these via `insert_many` (non-destructive; never
+            // deletes). Values are stored verbatim as strings.
+            if let Some(seed) = target.seeds.iter().find(|s| s.model == *model) {
+                let docs = seed_docs(seed);
+                if docs.is_empty() {
+                    vec![]
+                } else {
+                    vec![MongoOp::Insert {
+                        name: collection_name(model),
+                        docs,
+                    }]
+                }
+            } else {
+                vec![]
+            }
         }
     }
 }
@@ -179,7 +199,25 @@ pub fn op_to_mongo_down(op: &MigrationOp, current: &Lockfile) -> Vec<MongoOp> {
             // Mongo has no native views; view ops are no-ops for the Mongo adapter.
             vec![]
         }
+        // Seed data is inserted on `up`; the down migration must never delete
+        // data, so this is a no-op in the down direction.
+        MigrationOp::SeedData { .. } => vec![],
     }
+}
+
+/// Build a BSON document per seed row. Each `(column, value)` pair becomes a
+/// string field. Values are stored verbatim (the OSDL validator has already
+/// confirmed the columns exist on the model).
+fn seed_docs(seed: &osdl_core::ast::LockSeed) -> Vec<Document> {
+    let mut docs = Vec::new();
+    for row in &seed.rows {
+        let mut doc = Document::new();
+        for (col, val) in row {
+            doc.insert(col.clone(), Bson::String(val.clone()));
+        }
+        docs.push(doc);
+    }
+    docs
 }
 
 /// Execute the planned Mongo ops against `db`.
@@ -224,6 +262,16 @@ pub async fn apply_ops(db: &Database, ops: &[MongoOp]) -> Result<(), AdapterErro
                     .await
                     .map_err(|e| AdapterError::Exec(e.to_string()))?;
                 tracing::info!(collection = %name, "dropped collection");
+            }
+            MongoOp::Insert { name, docs } => {
+                if docs.is_empty() {
+                    continue;
+                }
+                db.collection::<mongodb::bson::Document>(name)
+                    .insert_many(docs.clone())
+                    .await
+                    .map_err(|e| AdapterError::Exec(e.to_string()))?;
+                tracing::info!(collection = %name, count = docs.len(), "inserted seed documents");
             }
         }
     }
@@ -286,6 +334,7 @@ mod tests {
     #[test]
     fn create_op_uses_collection_name() {
         let lf = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -305,6 +354,7 @@ mod tests {
     #[test]
     fn drop_field_uses_unset() {
         let lf = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -322,6 +372,7 @@ mod tests {
     fn down_create_drops_collection() {
         // The forward op created `users`; rolling back must drop it.
         let lf = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -339,6 +390,7 @@ mod tests {
         // The forward op dropped `users`; rolling back must recreate it with the
         // prior validator (sourced from `current`).
         let lf = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],
@@ -354,6 +406,7 @@ mod tests {
     #[test]
     fn down_add_field_uses_unset() {
         let lf = Lockfile {
+            seeds: vec![],
             version: 1,
             checksum: String::new(),
             models: vec![user_model()],

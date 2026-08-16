@@ -33,7 +33,13 @@ line    = { indent ~ body ~ newline }
 // matching only their alphabetic prefix. Model names are also emitted as
 // `Word` tokens and the parser accepts either `Name` or `Word` for a
 // top-level model/known-model declaration.
-body    = { use_stmt | type_decl | view_line | word ~ (sp? ~ token)* | name ~ (sp? ~ token)* | token ~ (sp? ~ token)* | comment_part | doc_comment | "" }
+body    = { use_stmt | type_decl | view_line | seed_line | word ~ (sp? ~ token)* | name ~ (sp? ~ token)* | token ~ (sp? ~ token)* | comment_part | doc_comment | "" }
+
+// A seed-data block header: `seed Model`. The rows live on following
+// indented continuation lines and are captured verbatim by the parser (like
+// view queries), so each row's `column=value` pairs need no grammar shaping.
+seed_line = { seed_kw ~ sp ~ ident }
+seed_kw   = @{ "seed" }
 
 // A view (read-model) declaration: `view Name (field type, ...) [-materialized] = QUERY`.
 // The projection (before `=`) is structured; the QUERY (after `=`) is free-form

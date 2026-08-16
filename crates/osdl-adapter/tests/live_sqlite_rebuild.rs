@@ -13,6 +13,7 @@ async fn rebuild_preserves_data_on_add_not_null() {
 
     // current = just id (table already exists with rows).
     let current = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![LockModel {
@@ -25,6 +26,7 @@ async fn rebuild_preserves_data_on_add_not_null() {
     };
     // target = id + age(int not null).
     let target = Lockfile {
+        seeds: vec![],
         version: Lockfile::VERSION,
         checksum: String::new(),
         models: vec![LockModel {

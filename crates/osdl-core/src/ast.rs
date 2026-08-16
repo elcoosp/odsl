@@ -75,6 +75,12 @@ pub struct Ast {
     /// collide and no model/field/lockfile literal has to change when views are
     /// added.
     pub views: Vec<View>,
+    /// Seed data fixtures declared with top-level `seed` blocks. Each `Seed`
+    /// targets an existing model and carries a list of untyped `(column,
+    /// value)` rows. Kept as a *separate* collection from `models`/`views` so
+    /// the structural namespaces never collide and no model/field/lockfile
+    /// literal has to change when seeds are added.
+    pub seeds: Vec<Seed>,
 }
 
 impl Ast {
@@ -114,6 +120,21 @@ impl Ast {
     /// Iterate the views in declaration order.
     pub fn views(&self) -> impl Iterator<Item = &View> {
         self.views.iter()
+    }
+
+    /// Add a seed dataset to the schema.
+    pub fn add_seed(&mut self, seed: Seed) {
+        self.seeds.push(seed);
+    }
+
+    /// Resolve a seed by target model name.
+    pub fn seed_by_name(&self, name: &str) -> Option<&Seed> {
+        self.seeds.iter().find(|s| s.model == name)
+    }
+
+    /// Iterate the seeds in declaration order.
+    pub fn seeds(&self) -> impl Iterator<Item = &Seed> {
+        self.seeds.iter()
     }
 
     /// Resolve a custom type by name.
@@ -403,6 +424,78 @@ impl Ast {
             .collect();
         views.sort_by(|a, b| a.name.cmp(&b.name));
         views
+    }
+}
+
+/// A seed-fixture dataset declared with a top-level `seed` block.
+///
+/// ```text
+/// seed User
+///   id=00000000-0000-0000-0000-000000000001 email="root@osdl.dev"
+///   id=00000000-0000-0000-0000-000000000002 email="user@osdl.dev"
+/// ```
+///
+/// Each row is an untyped list of `(column, value)` pairs; the values are
+/// emitted verbatim into `INSERT`/Mongo-insert statements. The seed targets an
+/// existing model (validated at compile time). Seeds are stored as a *separate*
+/// top-level collection from `Model`s so no model/field/lockfile literal breaks
+/// and the data namespace never collides with structural declarations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seed {
+    /// Target model name (must exist as a declared `Model`).
+    pub model: String,
+    /// Ordered list of rows; each row is an ordered list of `(column, value)`.
+    pub rows: Vec<SeedRow>,
+    pub line: usize,
+}
+
+/// A single seed row: an ordered list of `(column, value)` pairs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SeedRow {
+    /// Ordered `(column, value)` pairs. Order matters so the generated
+    /// `INSERT` columns line up.
+    pub columns: Vec<(String, String)>,
+}
+
+/// Lockfile projection of a [`Seed`] (deterministic, serializable).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockSeed {
+    /// Target model name.
+    pub model: String,
+    /// Rows with their `(column, value)` pairs. Rows are sorted by their
+    /// serialized form and each row's columns are sorted by column name for
+    /// deterministic diffing.
+    pub rows: Vec<Vec<(String, String)>>,
+}
+
+impl Ast {
+    /// Project the seeds into their deterministic lockfile form (rows sorted
+    /// by serialized form, columns within a row sorted by name) for diffing /
+    /// migration planning.
+    pub fn to_lock_seeds(&self) -> Vec<LockSeed> {
+        let mut seeds: Vec<LockSeed> = self
+            .seeds
+            .iter()
+            .map(|s| {
+                let mut rows: Vec<Vec<(String, String)>> = s
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        let mut cols: Vec<(String, String)> = r.columns.clone();
+                        cols.sort();
+                        cols
+                    })
+                    .collect();
+                // Sort rows by their serialized form for determinism.
+                rows.sort();
+                LockSeed {
+                    model: s.model.clone(),
+                    rows,
+                }
+            })
+            .collect();
+        seeds.sort_by(|a, b| a.model.cmp(&b.model));
+        seeds
     }
 }
 

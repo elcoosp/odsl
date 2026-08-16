@@ -46,6 +46,12 @@ pub enum MigrationOp {
     CreateView { view: String },
     /// Drop a view that no longer exists.
     DropView { view: String },
+    /// Insert seed data into a model that was not previously seeded.
+    /// Non-destructive: emitted only when the target seeds a model the current
+    /// lockfile did not; changing seed *content* is not re-applied (data is
+    /// left to the adapter's upsert semantics, and removing a seed never drops
+    /// data).
+    SeedData { model: String },
 }
 
 /// The ordered plan describing how to move `from` to `to`.
@@ -126,6 +132,22 @@ impl MigrationPlan {
         }
         ops.extend(view_drops);
 
+        // Seeds (fixtures). A seed is emitted as a `SeedData` op only when the
+        // *target* seeds a model that the *current* lockfile did not (i.e. the
+        // data is genuinely new). Changing seed content for an already-seeded
+        // model is NOT re-applied — data is left to the adapter's upsert
+        // semantics and schema diffs stay structural. Removing a seed never
+        // drops data (no `DropSeed` op), so seeding is always non-destructive.
+        let from_seeds: std::collections::HashSet<&str> =
+            from.seeds.iter().map(|s| s.model.as_str()).collect();
+        for seed in &to.seeds {
+            if !from_seeds.contains(seed.model.as_str()) {
+                ops.push(MigrationOp::SeedData {
+                    model: seed.model.clone(),
+                });
+            }
+        }
+
         Self { ops }
     }
 
@@ -147,6 +169,7 @@ impl MigrationPlan {
                 }
                 MigrationOp::CreateView { view } => format!("create view {view}"),
                 MigrationOp::DropView { view } => format!("drop view {view}"),
+                MigrationOp::SeedData { model } => format!("seed data {model}"),
             })
             .collect()
     }
@@ -163,7 +186,8 @@ impl MigrationPlan {
                 MigrationOp::CreateModel { .. }
                 | MigrationOp::AddField { .. }
                 | MigrationOp::CreateView { .. }
-                | MigrationOp::DropView { .. } => false,
+                | MigrationOp::DropView { .. }
+                | MigrationOp::SeedData { .. } => false,
             })
             .collect()
     }
@@ -237,6 +261,8 @@ impl MigrationPlan {
                 // Views hold no data: creating/dropping them is online-safe and
                 // non-destructive, so no advisory is raised.
                 MigrationOp::CreateView { .. } | MigrationOp::DropView { .. } => {}
+                // Seeds are non-destructive inserts; no advisory.
+                MigrationOp::SeedData { .. } => {}
             }
         }
         out
@@ -329,6 +355,7 @@ mod tests {
 
     fn lf(models: Vec<LockModel>) -> Lockfile {
         Lockfile {
+            seeds: vec![],
             version: Lockfile::VERSION,
             checksum: String::new(),
             models,
@@ -524,5 +551,71 @@ mod tests {
         );
         // Views are non-destructive.
         assert!(!plan2.is_destructive());
+    }
+
+    #[test]
+    fn detects_seed_data_for_newly_seeded_model() {
+        use osdl_core::ast::LockSeed;
+        let from = lf(vec![]);
+        let mut to = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![lock_field("id", "uuid", &["-pk"])],
+            indexes: vec![],
+            primary_key: vec![],
+        }]);
+        to.seeds = vec![LockSeed {
+            model: "User".into(),
+            rows: vec![vec![(
+                "id".into(),
+                "00000000-0000-0000-0000-000000000001".into(),
+            )]],
+        }];
+        let plan = MigrationPlan::diff(&from, &to);
+        // Only a SeedData op is emitted (no structural ops since the model
+        // already existed in `from`? Here `from` is empty so CreateModel also
+        // fires). The seed must be present and non-destructive.
+        let seed_ops: Vec<&str> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                MigrationOp::SeedData { model } => Some(model.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seed_ops, vec!["User"]);
+        // Seeding is non-destructive.
+        assert!(
+            !plan
+                .destructive_ops()
+                .iter()
+                .any(|op| matches!(op, MigrationOp::SeedData { .. }))
+        );
+    }
+
+    #[test]
+    fn seed_data_is_not_reapplied_for_already_seeded_model() {
+        use osdl_core::ast::LockSeed;
+        let mut from = lf(vec![LockModel {
+            name: "User".into(),
+            fields: vec![lock_field("id", "uuid", &["-pk"])],
+            indexes: vec![],
+            primary_key: vec![],
+        }]);
+        from.seeds = vec![LockSeed {
+            model: "User".into(),
+            rows: vec![vec![(
+                "id".into(),
+                "11111111-1111-1111-1111-111111111111".into(),
+            )]],
+        }];
+        let to = from.clone();
+        let plan = MigrationPlan::diff(&from, &to);
+        // No SeedData op when the seed is unchanged.
+        assert!(
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, MigrationOp::SeedData { .. }))
+        );
     }
 }
