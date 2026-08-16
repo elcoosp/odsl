@@ -293,7 +293,9 @@ impl SchemaAdapter for SqlAdapter {
     ) -> Result<Vec<String>, AdapterError> {
         let mut applied = Vec::new();
         for op in &plan.ops {
-            for stmt in sql::op_to_sql(self.dialect, op, target, current) {
+            let stmts = sql::op_to_sql(self.dialect, op, target, current)
+                .map_err(|e| AdapterError::Render(format!("failed to render migration op: {e}")))?;
+            for stmt in stmts {
                 // Skip informational comments (SQLite ALTER COLUMN no-op).
                 if stmt.trim_start().starts_with("--") {
                     applied.push(stmt);

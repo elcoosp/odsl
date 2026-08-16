@@ -110,7 +110,10 @@ fn render_sql(
     let up: Vec<String> = plan
         .ops
         .iter()
-        .flat_map(|op| op_to_sql(dialect, op, target, current))
+        .flat_map(|op| match op_to_sql(dialect, op, target, current) {
+            Ok(stmts) => stmts,
+            Err(e) => vec![format!("-- ERROR: migration could not be rendered: {e}")],
+        })
         .collect();
     // Down is the reverse op order with inverse statements.
     let down: Vec<String> = plan

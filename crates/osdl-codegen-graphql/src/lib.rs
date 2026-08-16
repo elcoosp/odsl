@@ -62,6 +62,7 @@ fn gql_scalar(s: ScalarType) -> &'static str {
         ScalarType::Uuid => "ID",
         ScalarType::Json => "JSON",
         ScalarType::Binary => "String",
+        ScalarType::Decimal => "Float", // GraphQL has no decimal; Float is the closest representation
     }
 }
 

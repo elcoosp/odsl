@@ -147,10 +147,17 @@ fn prisma_scalar(s: ScalarType) -> &'static str {
         ScalarType::Uuid => "String",
         ScalarType::Json => "Json",
         ScalarType::Binary => "Bytes",
+        ScalarType::Decimal => "Decimal",
     }
 }
 
 fn prisma_default(raw: &str) -> String {
+    // A raw OSDL default that is itself a Prisma function call (e.g. `uuid()`,
+    // `autoincrement()`) is emitted verbatim. `now` maps to Prisma's `now()`.
+    // Numeric literals pass through; everything else is a string literal.
+    if raw.ends_with(')') && raw.contains('(') {
+        return raw.to_string();
+    }
     match raw {
         "now" => "now()".into(),
         s if s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok() => s.to_string(),
@@ -354,14 +361,13 @@ fn extract_default(blob: &str) -> Option<String> {
     // are not truncated by the first closing paren.
     let end = rest.rfind(')')?;
     let inner = rest[..end].trim();
+    // Keep Prisma function-call defaults verbatim so they round-trip back to
+    // Prisma unchanged (OSDL stores them as raw default expressions). String
+    // literals have their quotes stripped.
     let mapped = match inner {
-        "uuid()" => "now".to_string(), // OSDL has no uuid() default; use now as a marker
         "now()" => "now".to_string(),
-        "autoincrement()" => "0".to_string(),
-        other => {
-            // Strip quotes for string defaults.
-            other.trim_matches('"').to_string()
-        }
+        other if other.ends_with(')') && other.contains('(') => other.to_string(),
+        other => other.trim_matches('"').to_string(),
     };
     Some(mapped)
 }
@@ -377,7 +383,7 @@ fn osdl_scalar(s: &str) -> Option<ScalarType> {
         "DateTime" => Some(ScalarType::DateTime),
         "Json" => Some(ScalarType::Json),
         "Bytes" => Some(ScalarType::Binary),
-        "Decimal" => Some(ScalarType::Float),
+        "Decimal" => Some(ScalarType::Decimal),
         _ => None,
     }
 }
@@ -528,5 +534,30 @@ mod tests {
         assert!(m.field_by_name("id").is_some());
         assert!(m.field_by_name("email").is_some());
         assert!(m.field_by_name("age").is_some());
+    }
+
+    #[test]
+    fn numeric_round_trips_decimal() {
+        // OSDL `numeric` maps to Prisma `Decimal` and back, preserving the
+        // precise numeric type (not silently downgraded to Float).
+        let prisma = "model Product {
+  id String @id @default(uuid())
+  price Decimal
+}
+";
+        let ast = parse_prisma(prisma).expect("parse prisma");
+        let (_, m) = ast.models().find(|(_, x)| x.name == "Product").unwrap();
+        let price = m.field_by_name("price").unwrap();
+        assert!(matches!(
+            &m.fields[price].ty,
+            osdl_core::types::FieldType::Scalar(osdl_core::types::ScalarType::Decimal)
+        ));
+
+        // Re-export and confirm it comes back as `Decimal`.
+        let out = render_prisma(&ast);
+        assert!(
+            out.contains("price Decimal"),
+            "expected `price Decimal`, got:\n{out}"
+        );
     }
 }

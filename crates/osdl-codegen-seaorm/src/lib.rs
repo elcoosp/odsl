@@ -222,7 +222,12 @@ fn render_field(field: &Field, ast: &Ast, model_name: &str, _target: Target) -> 
         let fk_col = name.clone();
         let fk_col_str = name.to_string();
         let ref_f_str = ref_f.clone();
-        let fk_ty = rust_type_for_ref(field, &ref_f);
+        // The FK column's Rust type follows the referenced model's primary-key
+        // scalar (e.g. an `int` PK -> `i32`, not a hard-coded `Uuid`).
+        let fk_ty = match referenced_pk_scalar(ast, &ref_m) {
+            Some(s) => scalar_rust_type(s, field.has(Intent::Null)),
+            None => scalar_rust_type(ScalarType::Uuid, field.has(Intent::Null)),
+        };
         let target_module =
             syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
         let rel_name = syn::Ident::new(&ref_m.to_ascii_lowercase(), proc_macro2::Span::call_site());
@@ -328,13 +333,6 @@ fn default_attr(field: &Field) -> TokenStream {
 
 /// Rust type for a foreign-key scalar column; falls back to `Uuid` (the common
 /// key type) when the field carries no explicit scalar type.
-fn rust_type_for_ref(field: &Field, _ref_f: &str) -> TokenStream {
-    if let FieldType::Scalar(s) = &field.ty {
-        return scalar_rust_type(*s, field.has(Intent::Null));
-    }
-    scalar_rust_type(ScalarType::Uuid, field.has(Intent::Null))
-}
-
 /// Extract the target model name from a `-relation Model` field.
 fn relation_target_entity(field: &Field) -> Option<String> {
     if let FieldType::InferredRef(s) = &field.ty
@@ -346,6 +344,18 @@ fn relation_target_entity(field: &Field) -> Option<String> {
         return Some(model);
     }
     None
+}
+
+/// Resolve the referenced model's primary-key scalar type (e.g. `int` -> `Int`),
+/// so a foreign-key column matches the key it points at. Returns `None` when the
+/// model cannot be located (the validator guarantees references resolve).
+fn referenced_pk_scalar(ast: &Ast, ref_m: &str) -> Option<ScalarType> {
+    let (_idx, m) = ast.models().find(|(_, m)| m.name == ref_m)?;
+    let (_fidx, pk) = m.fields().find(|(_, f)| f.has(Intent::Pk))?;
+    match &pk.ty {
+        FieldType::Scalar(s) => Some(*s),
+        _ => None,
+    }
 }
 
 /// Map a field to its SeaORM Rust type token.
@@ -398,6 +408,7 @@ fn scalar_rust_type(s: ScalarType, nullable: bool) -> TokenStream {
         ScalarType::Uuid => quote! { uuid::Uuid },
         ScalarType::Json => quote! { serde_json::Value },
         ScalarType::Binary => quote! { Vec<u8> },
+        ScalarType::Decimal => quote! { Decimal },
     };
     if nullable {
         quote! { Option<#base> }

@@ -19,6 +19,12 @@ pub enum AdapterError {
 
     #[error("JSON (de)serialization error: {0}")]
     Json(String),
+
+    /// A migration could not be rendered (e.g. an op referenced a model that
+    /// is absent from the target lockfile). Surfaced loudly rather than
+    /// silently emitting empty DDL.
+    #[error("migration render error: {0}")]
+    Render(String),
 }
 
 impl From<sea_orm::DbErr> for AdapterError {

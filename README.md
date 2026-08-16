@@ -2,9 +2,12 @@
 
 OSDL is a minimal, indentation-based schema language that compiles to
 backend-native code: **SeaORM 2.0** entities (SQLite / Postgres / MySQL),
-**MongoDB** Serde structs + `$jsonSchema` validators, **TypeScript** interfaces,
-**GraphQL** SDL, and **OpenAPI** documents. It also produces deterministic
-lockfiles so schema migrations can be auto-diffed and reliably applied.
+**MongoDB** Serde structs + `$jsonSchema` validators, **TypeScript** interfaces
+(+ runtime validators: Zod / Valibot / TypeBox), **GraphQL** SDL, **OpenAPI**
+documents, **JSON Schema**, **tRPC** routers, and **Entity-Relationship
+diagrams**. It also produces deterministic lockfiles so schema migrations can
+be auto-diffed and reliably applied, and can round-trip to **Prisma Schema
+Language** via `osdl convert`.
 
 OSDL is the single source of truth for your schema — one file drives your
 database, your API contract, and your frontend types.
@@ -21,11 +24,16 @@ database, your API contract, and your frontend types.
 | `osdl-codegen-typescript` | TypeScript interfaces + runtime validators |
 | `osdl-codegen-graphql` | GraphQL SDL (types, inputs, queries, mutations) |
 | `osdl-codegen-openapi` | OpenAPI 3 document renderer |
+| `osdl-codegen-json-schema` | JSON Schema (draft-07) document renderer |
+| `osdl-codegen-ts-validators` | Zod / Valibot / TypeBox validator renderers |
+| `osdl-codegen-trpc` | tRPC v10 routers (CRUD) over a Prisma-style `ctx.db` |
+| `osdl-codegen-erd` | Entity-Relationship diagram (Mermaid / PlantUML) renderer |
+| `osdl-codegen-prisma` | Prisma Schema Language interop (import/export) |
 | `osdl-migrator` | AST diff engine + lockfile I/O |
 | `osdl-adapter` | Live DB adapters: SeaORM (SQLite/Postgres/MySQL) + MongoDB |
 | `osdl-lsp` | Language Server Protocol server (diagnostics, hover, go-to-def) |
 | `osdl-mcp` | Model Context Protocol server for AI agents |
-| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate`, `fmt`, `pull`, `lsp`, `mcp` |
+| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate`, `convert`, `fmt`, `pull`, `lsp`, `mcp` |
 
 ## The OSDL surface syntax
 
@@ -109,7 +117,8 @@ If omitted, the migration defaults to `Cascade` to keep lockfile output stable.
 
 ### Types
 
-`string` `int` `bigint` `float` `bool` `datetime` `date` `uuid` `json` `binary`
+`string` `int` `bigint` `float` `bool` `datetime` `date` `uuid` `json` `binary` `numeric`
+(`numeric` maps to `NUMERIC`/`DECIMAL(38,10)`/`Decimal128` across backends.)
 
 ### Intent flags
 
@@ -154,7 +163,17 @@ osdl build --target mongo                # Mongo structs + jsonSchema
 osdl build --target typescript           # TS interfaces + runtime validators
 osdl build --target graphql              # GraphQL SDL
 osdl build --target openapi              # OpenAPI 3 document
+osdl build --target json-schema          # JSON Schema (draft-07)
+osdl build --target zod                  # Zod validators
+osdl build --target valibot              # Valibot validators
+osdl build --target typebox              # TypeBox validators
+osdl build --target trpc                 # tRPC v10 routers (per-model CRUD)
+osdl build --target erd                  # Entity-Relationship diagram (Mermaid)
 osdl build --watch                       # rebuild on change
+
+# Interop with Prisma Schema Language
+osdl convert --direction to-prisma schema.osdl schema.prisma     # OSDL -> Prisma
+osdl convert --direction from-prisma schema.prisma schema.osdl    # Prisma -> OSDL
 
 # Reverse-engineer a live database into schema.osdl
 osdl pull --db-url postgres://localhost/app

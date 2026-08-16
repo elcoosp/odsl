@@ -51,6 +51,7 @@ fn oas_scalar(s: ScalarType) -> Value {
         ScalarType::Uuid => json!({ "type": "string", "format": "uuid" }),
         ScalarType::Json => json!({}),
         ScalarType::Binary => json!({ "type": "string", "format": "binary" }),
+        ScalarType::Decimal => json!({ "type": "number", "format": "decimal" }),
     }
 }
 

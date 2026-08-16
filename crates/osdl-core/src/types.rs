@@ -19,6 +19,7 @@ pub enum ScalarType {
     Uuid,
     Json,
     Binary,
+    Decimal,
 }
 
 impl ScalarType {
@@ -35,6 +36,7 @@ impl ScalarType {
             ScalarType::Uuid => "uuid",
             ScalarType::Json => "json",
             ScalarType::Binary => "binary",
+            ScalarType::Decimal => "numeric",
         }
     }
 
@@ -51,6 +53,7 @@ impl ScalarType {
             "uuid" => Some(ScalarType::Uuid),
             "json" => Some(ScalarType::Json),
             "binary" | "bytes" | "blob" => Some(ScalarType::Binary),
+            "decimal" | "numeric" | "decimal128" => Some(ScalarType::Decimal),
             _ => None,
         }
     }

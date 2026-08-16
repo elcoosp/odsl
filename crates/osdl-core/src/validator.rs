@@ -399,6 +399,7 @@ pub fn rust_type_for(scalar: ScalarType) -> &'static str {
         ScalarType::Uuid => "uuid::Uuid",
         ScalarType::Json => "serde_json::Value",
         ScalarType::Binary => "Vec<u8>",
+        ScalarType::Decimal => "Decimal",
     }
 }
 

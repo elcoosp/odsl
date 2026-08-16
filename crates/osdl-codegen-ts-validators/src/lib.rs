@@ -87,6 +87,7 @@ fn scalar_expr(flavor: ValidatorFlavor, s: ScalarType) -> String {
             ScalarType::Uuid => "z.string().uuid()".into(),
             ScalarType::Json => "z.unknown()".into(),
             ScalarType::Binary => "z.instanceof(Uint8Array)".into(),
+            ScalarType::Decimal => "z.number()".into(),
         },
         ValidatorFlavor::Valibot => match s {
             ScalarType::String => "v.string()".into(),
@@ -99,6 +100,7 @@ fn scalar_expr(flavor: ValidatorFlavor, s: ScalarType) -> String {
             ScalarType::Uuid => "v.string()".into(),
             ScalarType::Json => "v.any()".into(),
             ScalarType::Binary => "v.instance(Uint8Array)".into(),
+            ScalarType::Decimal => "v.number()".into(),
         },
         ValidatorFlavor::TypeBox => match s {
             ScalarType::String => "Type.String()".into(),
@@ -111,6 +113,7 @@ fn scalar_expr(flavor: ValidatorFlavor, s: ScalarType) -> String {
             ScalarType::Uuid => "Type.String({ format: \"uuid\" })".into(),
             ScalarType::Json => "Type.Unknown()".into(),
             ScalarType::Binary => "Type.Uint8Array()".into(),
+            ScalarType::Decimal => "Type.Number()".into(),
         },
     }
 }
@@ -278,11 +281,6 @@ fn field_doc_lines(flavor: ValidatorFlavor, field: &Field, ast: &Ast, model: &st
 }
 
 fn render_model(flavor: ValidatorFlavor, model: &Model, ast: &Ast) -> String {
-    let lib = match flavor {
-        ValidatorFlavor::Zod => "z",
-        ValidatorFlavor::Valibot => "v",
-        ValidatorFlavor::TypeBox => "Type",
-    };
     let import: String = match flavor {
         ValidatorFlavor::Zod => "import { z } from \"zod\";".into(),
         ValidatorFlavor::Valibot => "import * as v from \"valibot\";".into(),
