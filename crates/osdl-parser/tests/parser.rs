@@ -539,3 +539,46 @@ AuthorBook
     assert!(lf.models.iter().any(|m| m.name == "AuthorBook"));
     assert!(!lf.models.iter().any(|m| m.name == "Author_Book"));
 }
+
+#[test]
+fn parses_config_block() {
+    let src = "config
+  default-type uuid
+  timestamp-format iso8601
+  soft-delete field=deleted_at
+  audit created_at,updated_at
+
+User
+  id uuid -pk
+";
+    let ast = parse(src).unwrap();
+    let c = &ast.config;
+    assert_eq!(c.default_type.as_deref(), Some("uuid"));
+    assert_eq!(c.timestamp_format.as_deref(), Some("iso8601"));
+    assert_eq!(c.soft_delete_field.as_deref(), Some("deleted_at"));
+    assert_eq!(c.audit_fields, vec!["created_at", "updated_at"]);
+    // The config block must not create a phantom "config" model.
+    assert!(ast.model_by_name("config").is_none());
+    // The real model is still parsed.
+    assert!(ast.model_by_name("User").is_some());
+}
+
+#[test]
+fn config_suppresses_missing_timestamps_lint() {
+    use osdl_core::lint::{LintConfig, LintRule, Linter};
+    let src = "config
+  audit created_at,updated_at
+
+User
+  id uuid -pk
+";
+    let ast = parse(src).unwrap();
+    let linter = Linter::new(LintConfig::default());
+    let findings = linter.lint(&ast);
+    // User declares both audit columns per the config, so no missing-timestamps.
+    let ts = findings
+        .iter()
+        .filter(|f| f.rule == LintRule::MissingTimestamps)
+        .count();
+    assert_eq!(ts, 0, "expected no missing-timestamps, got: {findings:?}");
+}

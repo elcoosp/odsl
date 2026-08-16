@@ -30,6 +30,12 @@ fn render(ast: &Ast) -> String {
     models.sort_by_key(|m| m.name.clone());
 
     let mut out = String::new();
+    // Schema-level `config` block (if present) is emitted first.
+    let cfg = render_config(ast);
+    if !cfg.is_empty() {
+        out.push_str(&cfg);
+        out.push('\n');
+    }
     for (i, m) in models.iter().enumerate() {
         if i > 0 {
             out.push('\n');
@@ -52,6 +58,33 @@ fn render(ast: &Ast) -> String {
     // newline is needed, so just trim a single trailing blank line if present.
     while out.ends_with("\n\n") {
         out.pop();
+    }
+    out
+}
+
+/// Render the schema-level `config` block, or an empty string when no config
+/// is present. The block order is fixed for determinism.
+fn render_config(ast: &Ast) -> String {
+    let c = &ast.config;
+    if c.default_type.is_none()
+        && c.timestamp_format.is_none()
+        && c.soft_delete_field.is_none()
+        && c.audit_fields.is_empty()
+    {
+        return String::new();
+    }
+    let mut out = String::from("config\n");
+    if let Some(dt) = &c.default_type {
+        out.push_str(&format!("  default-type {dt}\n"));
+    }
+    if let Some(tf) = &c.timestamp_format {
+        out.push_str(&format!("  timestamp-format {tf}\n"));
+    }
+    if let Some(sd) = &c.soft_delete_field {
+        out.push_str(&format!("  soft-delete field={sd}\n"));
+    }
+    if !c.audit_fields.is_empty() {
+        out.push_str(&format!("  audit {}\n", c.audit_fields.join(",")));
     }
     out
 }
@@ -350,5 +383,33 @@ mod tests {
         assert!(out.contains("email string -uniq -deprecated \"use this\""));
         // The deprecation reason is preserved on the field.
         assert_eq!(ast.field_deprecation("User", "email"), Some("use this"));
+    }
+
+    #[test]
+    fn formats_config_block() {
+        // Build an Ast with a config block and verify the formatter emits it
+        // first, in the fixed canonical order. (Parse -> format -> parse
+        // round-trip stability is covered in the parser crate's tests.)
+        let mut ast = Ast::new();
+        ast.config.default_type = Some("uuid".into());
+        ast.config.timestamp_format = Some("iso8601".into());
+        ast.config.soft_delete_field = Some("deleted_at".into());
+        ast.config.audit_fields = vec!["created_at".into(), "updated_at".into()];
+        ast.add_model(Model {
+            name: "User".into(),
+            fields: la_arena::Arena::new(),
+            field_index: vec![],
+            line: 1,
+            indexes: vec![],
+            primary_key: vec![],
+        });
+        let out = format_ast(&ast);
+        assert!(out.starts_with("config\n"));
+        assert!(out.contains("  default-type uuid\n"));
+        assert!(out.contains("  timestamp-format iso8601\n"));
+        assert!(out.contains("  soft-delete field=deleted_at\n"));
+        assert!(out.contains("  audit created_at,updated_at\n"));
+        // The config block precedes the model block.
+        assert!(out.find("config").unwrap() < out.find("User").unwrap());
     }
 }

@@ -285,11 +285,22 @@ impl Linter {
                 ));
             }
 
+            // When a `config` block declares the audit columns (`audit
+            // created_at,updated_at`), the schema-level convention is the
+            // authority and the per-model missing-timestamps nag is suppressed
+            // (per the roadmap: config removes the boilerplate the linter
+            // otherwise flags on every model). Without config, the classic
+            // `created_at && updated_at` heuristic applies.
+            let has_ts = if ast.config.audit_fields.is_empty() {
+                has_audit_timestamps(model, &ast.config.audit_fields)
+            } else {
+                true
+            };
             if self
                 .config
                 .severities
                 .contains_key(&LintRule::MissingTimestamps)
-                && !has_timestamps(model)
+                && !has_ts
             {
                 findings.push(self.finding(
                     LintRule::MissingTimestamps,
@@ -389,18 +400,31 @@ fn is_foreign_key(field: &crate::ast::Field) -> bool {
 }
 
 /// Heuristic: the model has both a `created_at` and an `updated_at` field.
-fn has_timestamps(model: &crate::ast::Model) -> bool {
-    let mut created = false;
-    let mut updated = false;
-    for (_, f) in model.fields() {
-        if f.name == "created_at" {
-            created = true;
+/// Whether a model declares the schema's audit timestamp columns.
+///
+/// When `audit_fields` is non-empty (from a `config` block's `audit`
+/// setting), the model satisfies the rule only if it declares *every* listed
+/// audit column — this makes the `config` block the single source of truth for
+/// the schema-wide convention, removing the boilerplate the linter otherwise
+/// flags on every model. When `audit_fields` is empty, the classic
+/// `created_at && updated_at` heuristic applies.
+fn has_audit_timestamps(model: &crate::ast::Model, audit_fields: &[String]) -> bool {
+    if audit_fields.is_empty() {
+        let mut created = false;
+        let mut updated = false;
+        for (_, f) in model.fields() {
+            if f.name == "created_at" {
+                created = true;
+            }
+            if f.name == "updated_at" {
+                updated = true;
+            }
         }
-        if f.name == "updated_at" {
-            updated = true;
-        }
+        return created && updated;
     }
-    created && updated
+    audit_fields
+        .iter()
+        .all(|name| model.fields().any(|(_, f)| &f.name == name))
 }
 
 #[cfg(test)]

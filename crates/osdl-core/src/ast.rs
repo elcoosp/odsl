@@ -24,6 +24,33 @@ pub struct CustomType {
     pub check_expr: Option<String>,
 }
 
+/// Schema-level configuration declared in a top-level `config` block.
+///
+/// ```text
+/// config
+///   default-type uuid
+///   timestamp-format iso8601
+///   soft-delete field=deleted_at
+///   audit created_at,updated_at
+/// ```
+///
+/// `default-type` sets the implicit key type used when a field's type is
+/// omitted; `timestamp-format` records the canonical timestamp representation;
+/// `soft-delete` names the column that marks logical deletion; `audit` lists
+/// the created/updated tracking columns. The linter consults these so it no
+/// longer flags every model for the schema-wide convention.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaConfig {
+    /// Implicit key type for fields declared without an explicit type, e.g. `uuid`.
+    pub default_type: Option<String>,
+    /// Canonical timestamp representation, e.g. `iso8601`.
+    pub timestamp_format: Option<String>,
+    /// Column that marks logical (soft) deletion, e.g. `deleted_at`.
+    pub soft_delete_field: Option<String>,
+    /// Created/updated audit tracking columns, e.g. `[created_at, updated_at]`.
+    pub audit_fields: Vec<String>,
+}
+
 /// The whole compiled schema.
 #[derive(Debug, Clone, Default)]
 pub struct Ast {
@@ -41,6 +68,8 @@ pub struct Ast {
     /// `-deprecated "reason"` annotations on fields, keyed by `(model, field)`.
     /// The value is the human-readable deprecation reason.
     pub field_deprecated: HashMap<(String, String), String>,
+    /// Schema-level configuration from the top-level `config` block, if any.
+    pub config: SchemaConfig,
 }
 
 impl Ast {

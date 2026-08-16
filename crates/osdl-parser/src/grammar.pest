@@ -28,7 +28,12 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { use_stmt | type_decl | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | doc_comment | "" }
+// `word` is tried before `name` so that dash-words (e.g. `default-type`,
+// `foo-bar`) parse as a single `Word` token instead of `name` greedily
+// matching only their alphabetic prefix. Model names are also emitted as
+// `Word` tokens and the parser accepts either `Name` or `Word` for a
+// top-level model/known-model declaration.
+body    = { use_stmt | type_decl | word ~ (sp ~ token)* | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | doc_comment | "" }
 
 // A module import: `use path::to::module` (unquoted, `::`-separated). Resolved
 // by the project loader into additional source files merged into one AST.
@@ -46,6 +51,11 @@ type_rhs    = { word ~ (sp ~ token)* }
 indent  = @{ (" " | "\t")* }
 
 name    = @{ ident_char+ }
+// A dash-word (e.g. `default-type`, `foo-bar`) must parse via `word`, not as a
+// `name` prefix. `body` orders the alternatives so a bare `name` is accepted
+// for model declarations, while a `name` followed by content requires at
+// least one `sp ~ token` — preventing `name` from greedily matching only the
+// prefix of a dash-word and then failing at `newline`.
 token   = { flag | reference | quoted | word }
 sp      = _{ " " }
 
@@ -57,9 +67,11 @@ reference = @{ ident ~ "." ~ ident }
 // Used for values such as `-default ""` or `-default "pending"`.
 quoted  = @{ "\"" ~ quoted_inner ~ "\"" }
 quoted_inner = @{ (!"\"" ~ (!newline_char ~ ANY))* }
-// `word` carries type names, relation targets, and `-enum` value lists
-// (which may contain commas, e.g. `active,inactive`).
-word    = @{ (ident_char | ",")+ }
+// `word` carries type names, relation targets, `-enum` value lists
+// (which may contain commas, e.g. `active,inactive`), and `config`-block
+// keys/values (which may contain dashes, e.g. `default-type`, and an
+// equals sign, e.g. `field=deleted_at`).
+word    = @{ ident_char ~ (ident_char | "," | "-" | "=")* }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident      = @{ ident_char+ }

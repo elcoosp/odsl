@@ -10,7 +10,7 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex};
+use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex, SchemaConfig};
 use osdl_core::errors::{OsdlError, ParseError, Span};
 use osdl_core::types::{FieldType, FkAction, Intent, Reference, ScalarType};
 use pest::Parser;
@@ -81,7 +81,7 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     for line in &parsed {
         if line.indent == 0
             && !line.tokens.is_empty()
-            && let Some(RawToken::Name(n)) = line.tokens.first()
+            && let Some(RawToken::Name(n) | RawToken::Word(n)) = line.tokens.first()
         {
             known_models.insert(n.clone());
         }
@@ -108,11 +108,13 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     let mut ast = Ast::new();
     let mut current_model: Option<Model> = None;
     let mut uses: Vec<String> = Vec::new();
+    // Top-level `config` block accumulation (roadmap Phase 1.4).
+    let mut parsing_config = false;
+    let mut config = SchemaConfig::default();
     // Doc comment (`///`) pending attachment to the next model/field declaration.
     let mut pending_doc: Option<String> = None;
 
     for pl in &parsed {
-        // A `///` doc-comment line attaches to the next declaration. Consecutive
         // `///` lines accumulate into one multi-line doc. It carries no structural
         // tokens, so this check runs *before* the empty-token skip.
         if let Some(doc) = &pl.doc {
@@ -127,6 +129,22 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
             continue;
         }
         if pl.indent == 0 {
+            // A `config` block (roadmap Phase 1.4): top-level `config` begins a
+            // block of indented settings. We don't create a model for it.
+            if let Some(RawToken::Name(n) | RawToken::Word(n)) = pl.tokens.first()
+                && n == "config"
+            {
+                if let Some(m) = current_model.take() {
+                    ast.add_model(m);
+                }
+                parsing_config = true;
+                // Settings may also appear on the `config` line itself.
+                let cfg_tokens: Vec<_> = pl.tokens.iter().skip(1).cloned().collect();
+                if !cfg_tokens.is_empty() {
+                    apply_config_line(&mut config, &cfg_tokens);
+                }
+                continue;
+            }
             // A `use` declaration is not a model.
             if let Some(RawToken::Use(path)) = pl.tokens.first() {
                 uses.push(path.clone());
@@ -138,11 +156,14 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 ast.add_custom_type(ct);
                 continue;
             }
+            // Leaving a `config` block: its settings are already accumulated in
+            // the local `config` and will be stored on `ast` at loop end.
+            parsing_config = false;
             if let Some(m) = current_model.take() {
                 ast.add_model(m);
             }
             let name = match pl.tokens.first() {
-                Some(RawToken::Name(n)) => n.clone(),
+                Some(RawToken::Name(n)) | Some(RawToken::Word(n)) => n.clone(),
                 _ => {
                     return Err(OsdlError::Parse(
                         ParseError::new("expected a model name at column 0")
@@ -184,6 +205,11 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
             }
             current_model = Some(model);
         } else {
+            // Indented lines inside a `config` block are settings, not fields.
+            if parsing_config {
+                apply_config_line(&mut config, &pl.tokens);
+                continue;
+            }
             let m =
                 match current_model.as_mut() {
                     Some(m) => m,
@@ -235,6 +261,8 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     if let Some(m) = current_model.take() {
         ast.add_model(m);
     }
+    // Store the accumulated `config` block on the AST.
+    ast.config = config;
 
     Ok(FileAst { ast, uses })
 }
@@ -917,6 +945,58 @@ fn custom_type_from_tokens(
     }))
 }
 
+/// Apply one `config`-block line (already tokenized) to the accumulator.
+/// Keys are matched case-insensitively; unknown keys are ignored so evolving
+/// the config schema never rejects an older file.
+fn apply_config_line(cfg: &mut SchemaConfig, tokens: &[RawToken]) {
+    let mut iter = tokens.iter();
+    let key = match iter.next() {
+        Some(RawToken::Name(n)) | Some(RawToken::Word(n)) => n.clone(),
+        _ => return,
+    };
+    let mut values: Vec<String> = Vec::new();
+    for t in iter {
+        match t {
+            RawToken::Word(w) | RawToken::Name(w) => values.push(w.clone()),
+            RawToken::Flag(f) => values.push(f.clone()),
+            RawToken::Quoted(q) => values.push(q.clone()),
+            _ => {}
+        }
+    }
+    match key.to_ascii_lowercase().as_str() {
+        "default-type" | "default_type" => {
+            cfg.default_type = values.first().cloned();
+        }
+        "timestamp-format" | "timestamp_format" => {
+            cfg.timestamp_format = values.first().cloned();
+        }
+        "soft-delete" | "soft_delete" => {
+            // `soft-delete` or `soft-delete field=deleted_at`.
+            if let Some(v) = values.first() {
+                if let Some(field) = v.strip_prefix("field=") {
+                    cfg.soft_delete_field = Some(field.to_string());
+                } else {
+                    cfg.soft_delete_field = Some(v.clone());
+                }
+            }
+        }
+        "audit" => {
+            // `audit created_at,updated_at` (comma-joined or space-separated).
+            let mut fields = Vec::new();
+            for v in &values {
+                for part in v.split(',') {
+                    let p = part.trim();
+                    if !p.is_empty() {
+                        fields.push(p.to_string());
+                    }
+                }
+            }
+            cfg.audit_fields = fields;
+        }
+        _ => {}
+    }
+}
+
 fn parse_intent(flag: &str) -> Option<Intent> {
     match flag {
         "-pk" | "-primary" => Some(Intent::Pk),
@@ -975,6 +1055,7 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                 for b in inner.into_inner() {
                     match b.as_rule() {
                         Rule::name => tokens.push(RawToken::Name(b.as_str().to_string())),
+                        Rule::word => tokens.push(RawToken::Word(b.as_str().to_string())),
                         Rule::token => {
                             let t =
                                 b.into_inner().next().ok_or_else(|| {
