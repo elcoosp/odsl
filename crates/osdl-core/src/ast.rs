@@ -170,6 +170,71 @@ impl Ast {
         Ok(())
     }
 
+    /// Like [`Ast::schema_matches`] but additionally compares column type
+    /// keywords, so a silent type change (e.g. `int` → `bigint`) surfaces as an
+    /// error instead of being masked by the structural-only comparison.
+    pub fn schema_matches_strict(&self, actual: &Ast) -> Result<(), String> {
+        let actual_models: std::collections::HashMap<String, &Model> =
+            actual.models().map(|(_, m)| (m.name.clone(), m)).collect();
+
+        for (_, expected_model) in self.models() {
+            let actual_model = actual_models.get(&expected_model.name).ok_or_else(|| {
+                format!("missing model `{}` in live database", expected_model.name)
+            })?;
+
+            let actual_fields: std::collections::HashMap<String, &Field> = actual_model
+                .fields()
+                .map(|(_, f)| (f.name.clone(), f))
+                .collect();
+
+            for (_, ef) in expected_model.fields() {
+                let af = actual_fields.get(&ef.name).ok_or_else(|| {
+                    format!(
+                        "missing field `{}.{}` in live database",
+                        expected_model.name, ef.name
+                    )
+                })?;
+
+                let e_pk = ef.has(crate::types::Intent::Pk);
+                let a_pk = af.has(crate::types::Intent::Pk);
+                if e_pk != a_pk {
+                    return Err(format!(
+                        "field `{}.{}` primary-key mismatch (expected {}, got {})",
+                        expected_model.name, ef.name, e_pk, a_pk
+                    ));
+                }
+
+                let e_uniq = ef.has(crate::types::Intent::Uniq);
+                let a_uniq = af.has(crate::types::Intent::Uniq);
+                if e_uniq != a_uniq {
+                    return Err(format!(
+                        "field `{}.{}` unique mismatch (expected {}, got {})",
+                        expected_model.name, ef.name, e_uniq, a_uniq
+                    ));
+                }
+
+                let e_null = ef.has(crate::types::Intent::Null);
+                let a_null = af.has(crate::types::Intent::Null);
+                if e_null != a_null {
+                    return Err(format!(
+                        "field `{}.{}` nullability mismatch (expected {}, got {})",
+                        expected_model.name, ef.name, e_null, a_null
+                    ));
+                }
+
+                let e_ty = ef.type_keyword();
+                let a_ty = af.type_keyword();
+                if e_ty != a_ty {
+                    return Err(format!(
+                        "field `{}.{}` type mismatch (expected `{}`, got `{}`)",
+                        expected_model.name, ef.name, e_ty, a_ty
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Number of fields across all models (used by benchmarks).
     pub fn field_count(&self) -> usize {
         self.models.iter().map(|(_, m)| m.fields.len()).sum()
@@ -676,5 +741,29 @@ mod tests {
         // actual User has only id, missing `email`
         actual.add_model(model_with("User", vec![]));
         assert!(expected.schema_matches(&actual).is_err());
+    }
+
+    #[test]
+    fn schema_matches_strict_detects_type_drift() {
+        // `expected` uses `int`, `actual` uses `bigint`. The structural check
+        // ignores types, but strict mode must surface the drift as an error.
+        let mut expected = Ast::new();
+        expected.add_model(model_with(
+            "User",
+            vec![
+                ("age", ScalarType::Int, vec![]),
+                ("email", ScalarType::String, vec![Intent::Uniq]),
+            ],
+        ));
+        let mut actual = Ast::new();
+        actual.add_model(model_with(
+            "User",
+            vec![
+                ("age", ScalarType::BigInt, vec![]),
+                ("email", ScalarType::String, vec![Intent::Uniq]),
+            ],
+        ));
+        assert!(expected.schema_matches(&actual).is_ok());
+        assert!(expected.schema_matches_strict(&actual).is_err());
     }
 }

@@ -163,11 +163,24 @@ pub fn render_down_sql(
 }
 
 /// Inverse DDL for a single op (used by the down section).
+///
+/// The down of an op is the *inverse* change, which always requires the prior
+/// schema. We source that from `current` (the lockfile we are migrating from)
+/// and reuse the existing `op_to_sql` renderer so the dialect handling stays
+/// in one place:
+/// * `CreateModel`   → `DROP TABLE` (table no longer exists after the up).
+/// * `DropModel`     → recreate the table from `current` (the inverse of a drop).
+/// * `AddField`      → `DROP COLUMN` (remove what the up added).
+/// * `DropField`     → re-add the column from `current` (inverse of a drop).
+/// * `AlterField`    → restore the prior column definition from `current`.
+///
+/// This eliminates the old `None` gaps and comment-only guards, which were a
+/// real data-loss/rollback risk.
 fn down_sql(
     dialect: SqlDialect,
     op: &MigrationOp,
     _target: &Lockfile,
-    _current: Option<&Lockfile>,
+    current: Option<&Lockfile>,
 ) -> Option<String> {
     use crate::naming::{quote_ident_for, table_name};
     match op {
@@ -175,26 +188,71 @@ fn down_sql(
             "DROP TABLE {}",
             quote_ident_for(dialect, &table_name(model))
         )),
-        MigrationOp::DropModel { .. } => None, // cannot recreate without prior schema
+        MigrationOp::DropModel { model } => {
+            // Inverse of a drop is recreating the table from the prior lockfile.
+            let cur = current?;
+            let _ = cur.model_by_name(model)?;
+            crate::sql::op_to_sql(
+                dialect,
+                &MigrationOp::CreateModel {
+                    model: model.clone(),
+                },
+                cur,
+                Some(cur),
+            )
+            .ok()
+            .map(|stmts| stmts.join("; "))
+        }
         MigrationOp::AddField { model, field, .. } => Some(format!(
             "ALTER TABLE {} DROP COLUMN {}",
             quote_ident_for(dialect, &table_name(model)),
             quote_ident_for(dialect, field)
         )),
-        MigrationOp::DropField { .. } => None,
-        MigrationOp::AlterField { .. } => {
-            // Type rollback is backend-specific; emit a documented guard.
-            Some(match dialect {
-                SqlDialect::Sqlite => {
-                    "-- sqlite: ALTER COLUMN unsupported; manual rollback needed".to_string()
-                }
-                SqlDialect::Postgres => {
-                    "-- postgres: ALTER COLUMN TYPE rollback must be supplied manually".to_string()
-                }
-                SqlDialect::Mysql => {
-                    "-- mysql: ALTER COLUMN TYPE rollback must be supplied manually".to_string()
-                }
-            })
+        MigrationOp::DropField { model, field } => {
+            // Inverse of a drop is re-adding the column from the prior lockfile.
+            let cur = current?;
+            let lm = cur.model_by_name(model)?;
+            let prior = lm.fields.iter().find(|f| f.name == *field)?;
+            let ty = prior.ty.clone();
+            let nullable = prior.intents.iter().any(|i| i == "-null");
+            let uniq = prior.intents.iter().any(|i| i == "-uniq");
+            crate::sql::op_to_sql(
+                dialect,
+                &MigrationOp::AddField {
+                    model: model.clone(),
+                    field: field.clone(),
+                    ty,
+                    nullable,
+                    uniq,
+                },
+                cur,
+                Some(cur),
+            )
+            .ok()
+            .map(|stmts| stmts.join("; "))
+        }
+        MigrationOp::AlterField { model, field, .. } => {
+            // Inverse of an alter is restoring the prior column definition.
+            let cur = current?;
+            let lm = cur.model_by_name(model)?;
+            let prior = lm.fields.iter().find(|f| f.name == *field)?;
+            let ty = prior.ty.clone();
+            let nullable = prior.intents.iter().any(|i| i == "-null");
+            let uniq = prior.intents.iter().any(|i| i == "-uniq");
+            crate::sql::op_to_sql(
+                dialect,
+                &MigrationOp::AlterField {
+                    model: model.clone(),
+                    field: field.clone(),
+                    new_ty: ty,
+                    nullable,
+                    uniq,
+                },
+                cur,
+                Some(cur),
+            )
+            .ok()
+            .map(|stmts| stmts.join("; "))
         }
     }
 }
@@ -992,5 +1050,111 @@ mod tests {
         let empty = MigrationPlan { ops: vec![] };
         let out = render_migration(SqlDialect::Sqlite, &empty, &lf(), None);
         assert!(out.contents.contains("(no changes)"));
+    }
+
+    /// A `current` lockfile that still has the `age` column and the `User` model,
+    /// used to exercise down-of-drop / down-of-alter rollback rendering.
+    fn current_with_age() -> Lockfile {
+        Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                    lock_field("age", "int", &[]),
+                ],
+                indexes: vec![],
+            }],
+        }
+    }
+
+    fn target_with_age_bigint() -> Lockfile {
+        Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                    lock_field("age", "bigint", &[]),
+                ],
+                indexes: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn down_of_drop_field_readds_column() {
+        // Down of dropping a column must re-add it (from the prior lockfile),
+        // not silently emit nothing.
+        let current = current_with_age();
+        let target = target_with_age_bigint(); // age still present in target
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::DropField {
+                model: "User".into(),
+                field: "age".into(),
+            }],
+        };
+        let down = render_down_sql(SqlDialect::Postgres, &plan, &target, Some(&current));
+        let sql = down
+            .first()
+            .expect("down should produce one inverse statement");
+        assert!(
+            !sql.starts_with("-- "),
+            "down of DropField must be real DDL, got comment: {sql}"
+        );
+        assert!(
+            sql.contains("age"),
+            "down of DropField must mention the column: {sql}"
+        );
+    }
+
+    #[test]
+    fn down_of_alter_field_restores_prior_type() {
+        // Down of an ALTER that changed `int` -> `bigint` must restore `int`.
+        let current = current_with_age(); // age: int (prior)
+        let target = target_with_age_bigint(); // age: bigint (after)
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::AlterField {
+                model: "User".into(),
+                field: "age".into(),
+                new_ty: "bigint".into(),
+                nullable: true,
+                uniq: false,
+            }],
+        };
+        let down = render_down_sql(SqlDialect::Postgres, &plan, &target, Some(&current));
+        let sql = down
+            .first()
+            .expect("down should produce one inverse statement");
+        assert!(
+            sql.contains("TYPE INTEGER"),
+            "down of AlterField must restore the prior type: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn down_of_drop_model_recreates_table() {
+        // Down of dropping a model must recreate it from the prior lockfile.
+        let current = current_with_age();
+        let target = lf(); // model still present in target
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::DropModel {
+                model: "User".into(),
+            }],
+        };
+        let down = render_down_sql(SqlDialect::Postgres, &plan, &target, Some(&current));
+        let sql = down
+            .first()
+            .expect("down should produce one inverse statement");
+        assert!(
+            sql.contains("CREATE TABLE"),
+            "down of DropModel must recreate the table: {}",
+            sql
+        );
     }
 }

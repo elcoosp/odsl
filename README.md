@@ -251,3 +251,14 @@ cargo fmt  --all
   `"""`/`@deprecated`, OpenAPI `description`/`deprecated: true`).
 * **DRY/KISS** — the `CodeRenderer` trait is the single seam between the
   language and its backends.
+
+## Documentation
+
+- `docs/getting-started.md` — five-minute tutorial (install, schema, build, migrate, MCP).
+- `docs/backend-matrix.md` — which intents each backend (SQLite/Postgres/MySQL/Mongo/transpile) supports.
+- `docs/migration-guide.md` — coming from Prisma / Drizzle / SQLx.
+- `docs/spec.md`, `docs/tech-stack.md`, `docs/workspace.md` — language spec, stack, and crate layout.
+- `adr/` — Architecture Decision Records (start with `adr/ADR-003.md`: deterministic lockfiles as the migration contract).
+- `rfcs/` — RFC process and templates for major changes.
+- `SECURITY.md` — vulnerability reporting and security posture.
+- `CHANGELOG.md` — release notes (lockfile format is the semver contract).
