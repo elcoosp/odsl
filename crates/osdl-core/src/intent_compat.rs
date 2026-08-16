@@ -23,6 +23,9 @@ pub enum Target {
     /// OpenAPI 3 component schemas (API DTOs).
     #[value(name = "openapi")]
     OpenApi,
+    /// JSON Schema (draft 2020-12) per model.
+    #[value(name = "json-schema")]
+    JsonSchema,
 }
 
 impl Target {
@@ -36,6 +39,7 @@ impl Target {
             Target::TypeScript => "typescript",
             Target::GraphQl => "graphql",
             Target::OpenApi => "openapi",
+            Target::JsonSchema => "json-schema",
         }
     }
 
@@ -49,7 +53,10 @@ impl Target {
 
     /// Whether this target is a transpile-only target (no database backend).
     pub fn is_transpile(self) -> bool {
-        matches!(self, Target::TypeScript | Target::GraphQl | Target::OpenApi)
+        matches!(
+            self,
+            Target::TypeScript | Target::GraphQl | Target::OpenApi | Target::JsonSchema
+        )
     }
 }
 
@@ -65,6 +72,7 @@ impl FromStr for Target {
             "typescript" | "ts" => Ok(Target::TypeScript),
             "graphql" | "graphql-sdl" | "gql" => Ok(Target::GraphQl),
             "openapi" | "oas" | "swagger" => Ok(Target::OpenApi),
+            "json-schema" | "jsonschema" | "json_schema" => Ok(Target::JsonSchema),
             other => Err(format!("unknown target `{other}`")),
         }
     }

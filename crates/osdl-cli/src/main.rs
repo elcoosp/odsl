@@ -16,6 +16,7 @@ use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
 use osdl_codegen_erd::{ErdFormat, render as render_erd};
 use osdl_codegen_graphql::GraphQLRenderer;
+use osdl_codegen_jsonschema::JsonSchemaRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_codegen_seaorm::SeaOrmRenderer;
@@ -453,6 +454,7 @@ fn run_build(
         Target::TypeScript => TypeScriptRenderer::new(target).render(&ast)?,
         Target::GraphQl => GraphQLRenderer::new(target).render(&ast)?,
         Target::OpenApi => OpenApiRenderer::new(target).render(&ast)?,
+        Target::JsonSchema => JsonSchemaRenderer::new(target).render(&ast)?,
     };
     std::fs::create_dir_all(out)?;
     for (rel, contents) in &files {

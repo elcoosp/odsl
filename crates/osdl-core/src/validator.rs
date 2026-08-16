@@ -374,9 +374,10 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
         (Mongo, Fulltext) => true, // Mongo text index
         // FK referential actions: supported on every SQL backend; advisory on Mongo.
         (SeaOrmSqlite | SeaOrmPostgres | SeaOrmMysql | Mongo, OnDelete | OnUpdate) => true,
-        // Transpile targets (TS / GraphQL / OpenAPI) describe types only and
-        // support every intent as a documentation/constraint annotation.
-        (TypeScript | GraphQl | OpenApi, _) => true,
+        // Transpile targets (TS / GraphQL / OpenAPI / JSON Schema) describe
+        // types only and support every intent as a documentation/constraint
+        // annotation.
+        (TypeScript | GraphQl | OpenApi | JsonSchema, _) => true,
     }
 }
 

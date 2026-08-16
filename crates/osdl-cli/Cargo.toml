@@ -21,6 +21,7 @@ osdl-codegen-typescript.workspace = true
 osdl-codegen-graphql.workspace = true
 osdl-codegen-openapi.workspace = true
 osdl-codegen-erd.workspace = true
+osdl-codegen-jsonschema.workspace = true
 osdl-migrator.workspace = true
 osdl-adapter.workspace = true
 osdl-lsp.workspace = true

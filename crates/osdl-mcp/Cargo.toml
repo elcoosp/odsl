@@ -13,6 +13,7 @@ osdl-codegen-mongo = { workspace = true }
 osdl-codegen-typescript = { workspace = true }
 osdl-codegen-graphql = { workspace = true }
 osdl-codegen-openapi = { workspace = true }
+osdl-codegen-jsonschema = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

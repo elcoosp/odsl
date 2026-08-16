@@ -308,6 +308,7 @@ fn render_target(
         Target::TypeScript => osdl_codegen_typescript::TypeScriptRenderer::new(target).render(ast),
         Target::GraphQl => osdl_codegen_graphql::GraphQLRenderer::new(target).render(ast),
         Target::OpenApi => osdl_codegen_openapi::OpenApiRenderer::new(target).render(ast),
+        Target::JsonSchema => osdl_codegen_jsonschema::JsonSchemaRenderer::new(target).render(ast),
     }
 }
 
