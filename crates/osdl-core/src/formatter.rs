@@ -134,8 +134,7 @@ fn render_seeds(ast: &Ast) -> String {
         out.push_str(&s.model);
         out.push('\n');
         for row in &s.rows {
-            let mut cols = row.columns.clone();
-            cols.sort();
+            let cols = row.columns.clone();
             let entries: Vec<String> = cols
                 .iter()
                 .map(|(c, v)| {

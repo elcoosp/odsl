@@ -4,6 +4,7 @@
 //! other cyclically (e.g. `User` -> `Post` -> `User`) without fighting the
 //! borrow checker. Nodes are addressed by stable [`Idx`] handles.
 
+use crate::errors::{OsdlError, ParseError};
 use crate::types::{FieldType, FkAction, Intent, ScalarType};
 use la_arena::{Arena, Idx, RawIdx};
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,56 @@ pub struct SchemaConfig {
     pub soft_delete_field: Option<String>,
     /// Created/updated audit tracking columns, e.g. `[created_at, updated_at]`.
     pub audit_fields: Vec<String>,
+}
+
+impl SchemaConfig {
+    /// Merge settings from `other`, refining only the keys the receiver left
+    /// unset. Used during multi-file `use` resolution so an imported module can
+    /// supply schema-wide defaults without clobbering the entry file. A key set
+    /// in *both* files with *different* values is a conflict and returns an
+    /// error.
+    pub fn merge_from(&mut self, other: &SchemaConfig) -> Result<(), OsdlError> {
+        if let Some(other_val) = &other.default_type {
+            match &self.default_type {
+                Some(existing) if existing != other_val => {
+                    return Err(OsdlError::Parse(ParseError::new(
+                        "conflicting config `default-type` across files".to_string(),
+                    )));
+                }
+                Some(_) => {}
+                None => self.default_type = Some(other_val.clone()),
+            }
+        }
+        if let Some(other_val) = &other.timestamp_format {
+            match &self.timestamp_format {
+                Some(existing) if existing != other_val => {
+                    return Err(OsdlError::Parse(ParseError::new(
+                        "conflicting config `timestamp-format` across files".to_string(),
+                    )));
+                }
+                Some(_) => {}
+                None => self.timestamp_format = Some(other_val.clone()),
+            }
+        }
+        if let Some(other_val) = &other.soft_delete_field {
+            match &self.soft_delete_field {
+                Some(existing) if existing != other_val => {
+                    return Err(OsdlError::Parse(ParseError::new(
+                        "conflicting config `soft-delete` across files".to_string(),
+                    )));
+                }
+                Some(_) => {}
+                None => self.soft_delete_field = Some(other_val.clone()),
+            }
+        }
+        // Audit fields concatenate, de-duplicated, preserving order.
+        for a in &other.audit_fields {
+            if !self.audit_fields.contains(a) {
+                self.audit_fields.push(a.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The whole compiled schema.

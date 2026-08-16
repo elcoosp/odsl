@@ -30,7 +30,7 @@ use osdl_core::errors::OsdlError;
 use osdl_core::lockfile::Lockfile;
 use osdl_core::validator::CodeRenderer;
 use osdl_migrator::{MigrationPlan, plan_migration, read_lockfile, write_lockfile};
-use osdl_parser::parse;
+use osdl_parser::{parse, parse_project};
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
@@ -355,11 +355,11 @@ fn init_tracing(verbose: u8) {
 }
 
 fn load_ast(input: &std::path::Path, target: Target) -> Result<Ast, OsdlError> {
-    let src = std::fs::read_to_string(input)
-        .map_err(|e| io_err(format!("reading {}: {e}", input.display())))?;
-    let ast = parse(&src)?;
-    osdl_core::Validator::validate(&ast, Some(target))?;
-    Ok(ast)
+    // Resolve the full project: follow `use` declarations and merge every
+    // imported module into one AST (roadmap Phase 1.7 — multi-file modules).
+    let project = parse_project(input)?;
+    osdl_core::Validator::validate(&project.ast, Some(target))?;
+    Ok(project.ast)
 }
 
 fn cmd_convert(

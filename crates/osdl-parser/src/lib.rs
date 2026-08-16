@@ -438,6 +438,90 @@ fn resolve_file(
         }
         ast.add_model(model.clone());
     }
+
+    // Merge views (roadmap Phase 1.5). A view name must be unique across the
+    // whole project.
+    for v in file_ast.ast.views() {
+        if ast.view_by_name(&v.name).is_some() {
+            return Err(OsdlError::Parse(ParseError::new(format!(
+                "duplicate view `{}` (imported via `use` from {})",
+                v.name,
+                canon.display()
+            ))));
+        }
+        ast.add_view(v.clone());
+    }
+
+    // Merge seeds (roadmap Phase 1.6). A seed's target model must be unique
+    // across the whole project.
+    for s in file_ast.ast.seeds() {
+        if ast.seed_by_name(&s.model).is_some() {
+            return Err(OsdlError::Parse(ParseError::new(format!(
+                "duplicate seed for model `{}` (imported via `use` from {})",
+                s.model,
+                canon.display()
+            ))));
+        }
+        ast.add_seed(s.clone());
+    }
+
+    // Merge custom types. A name collision across files is an error.
+    for (name, ct) in &file_ast.ast.custom_types {
+        if ast.custom_type_by_name(name).is_some() {
+            return Err(OsdlError::Parse(ParseError::new(format!(
+                "duplicate custom type `{name}` (imported via `use` from {})",
+                canon.display()
+            ))));
+        }
+        ast.add_custom_type(ct.clone());
+    }
+
+    // Merge doc / deprecation metadata. The same (model,field) key must not be
+    // declared in two files; if it is, the later one wins only when it differs
+    // is not desirable — surface a collision to keep the merge deterministic.
+    for (key, val) in &file_ast.ast.model_docs {
+        if let Some(existing) = ast.model_docs.get(key) {
+            if existing != val {
+                return Err(OsdlError::Parse(ParseError::new(format!(
+                    "duplicate doc-comment for model `{key}` (imported via `use` from {})",
+                    canon.display()
+                ))));
+            }
+        } else {
+            ast.model_docs.insert(key.clone(), val.clone());
+        }
+    }
+    for (key, val) in &file_ast.ast.field_docs {
+        if let Some(existing) = ast.field_docs.get(key) {
+            if existing != val {
+                return Err(OsdlError::Parse(ParseError::new(format!(
+                    "duplicate doc-comment for field `{}.{}` (imported via `use` from {})",
+                    key.0, key.1,
+                    canon.display()
+                ))));
+            }
+        } else {
+            ast.field_docs.insert(key.clone(), val.clone());
+        }
+    }
+    for (key, val) in &file_ast.ast.field_deprecated {
+        if let Some(existing) = ast.field_deprecated.get(key) {
+            if existing != val {
+                return Err(OsdlError::Parse(ParseError::new(format!(
+                    "duplicate deprecation for field `{}.{}` (imported via `use` from {})",
+                    key.0, key.1,
+                    canon.display()
+                ))));
+            }
+        } else {
+            ast.field_deprecated.insert(key.clone(), val.clone());
+        }
+    }
+
+    // Merge the schema config block. The entry file's config wins if set; an
+    // imported file may only refine keys the entry left unset.
+    ast.config.merge_from(&file_ast.ast.config)?;
+
     sources.push(canon.clone());
 
     // Resolve imports relative to this file's directory.
@@ -1634,5 +1718,73 @@ seed Post\n  id=abc title=\"Hello\" published=true\n";
 seed User\n  id=1 brokenrow\n";
         // The malformed row (no `=`) must surface as a parse error.
         assert!(parse(src).is_err());
+    }
+
+    #[test]
+    fn parse_project_merges_modules() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("osdl_proj_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mod_dir = dir.join("billing");
+        let _ = std::fs::create_dir_all(&mod_dir);
+
+        // Entry file: defines User and a view, and imports the billing module.
+        let entry = "use billing::invoice\n\
+User\n  id uuid -pk\n  email string\n\
+view ActiveUsers = SELECT u.id FROM users u WHERE u.active\n\
+type Email = string -check \"x ~ 'y'\"\n";
+        // Imported module: defines Invoice (model), a view, and a seed.
+        let invoice = "Invoice\n  id uuid -pk\n  total int\n\
+view RecentInvoices = SELECT i.id FROM invoices i ORDER BY i.created_at DESC\n\
+seed Invoice\n  id=00000000-0000-0000-0000-0000000000aa total=42\n";
+
+        let entry_path = dir.join("main.osdl");
+        let invoice_path = mod_dir.join("invoice.osdl");
+        {
+            let mut f = std::fs::File::create(&entry_path).unwrap();
+            f.write_all(entry.as_bytes()).unwrap();
+            let mut f = std::fs::File::create(&invoice_path).unwrap();
+            f.write_all(invoice.as_bytes()).unwrap();
+        }
+
+        let project = parse_project(&entry_path).expect("project resolves");
+        // Both source files are tracked (entry first, then the import).
+        assert_eq!(project.sources.len(), 2);
+
+        let ast = &project.ast;
+        // Models merged across files.
+        assert!(ast.model_by_name("User").is_some());
+        assert!(ast.model_by_name("Invoice").is_some());
+        // Views merged across files.
+        assert!(ast.view_by_name("ActiveUsers").is_some());
+        assert!(ast.view_by_name("RecentInvoices").is_some());
+        // Seeds merged across files.
+        assert!(ast.seed_by_name("Invoice").is_some());
+        // Custom types merged across files.
+        assert!(ast.custom_type_by_name("Email").is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_project_detects_duplicate_model_across_files() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("osdl_dup_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mod_dir = dir.join("billing");
+        let _ = std::fs::create_dir_all(&mod_dir);
+
+        let entry = "use billing::invoice\nUser\n  id uuid -pk\n";
+        let invoice = "User\n  id uuid -pk\n  name string\n";
+        let entry_path = dir.join("main.osdl");
+        let invoice_path = mod_dir.join("invoice.osdl");
+        {
+            let mut f = std::fs::File::create(&entry_path).unwrap();
+            f.write_all(entry.as_bytes()).unwrap();
+            let mut f = std::fs::File::create(&invoice_path).unwrap();
+            f.write_all(invoice.as_bytes()).unwrap();
+        }
+        assert!(parse_project(&entry_path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
