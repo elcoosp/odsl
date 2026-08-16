@@ -77,6 +77,21 @@ fn render_model_prisma(model: &Model) -> String {
         let cols = composite_pk.to_vec().join(", ");
         out.push_str(&format!("  @@id([{cols}])\n"));
     }
+    // Model-level indexes / unique constraints. `-type gin`/`-type gist` is
+    // emitted as Prisma's `type:` modifier on the index.
+    for idx in &model.indexes {
+        let cols = idx.fields.to_vec().join(", ");
+        let modifier = match idx.index_type.as_deref() {
+            Some("gin") => "type: Gin, ",
+            Some("gist") => "type: Gist, ",
+            _ => "",
+        };
+        if idx.unique {
+            out.push_str(&format!("  @@unique([{cols}], {modifier})\n"));
+        } else {
+            out.push_str(&format!("  @@index([{cols}], {modifier})\n"));
+        }
+    }
     out.push_str("}\n");
     out
 }
@@ -569,6 +584,33 @@ mod tests {
         assert!(
             out.contains("price Decimal"),
             "expected `price Decimal`, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn indexes_render_with_options() {
+        let src = "Post
+  id uuid -pk
+  tenant_id uuid
+  deleted_at datetime
+  -index tenant_id,deleted_at -type gin -where \"deleted_at IS NULL\" -order desc
+  -uniq tenant_id,id -type btree
+";
+        let ast = osdl(src);
+        let p = render_prisma(&ast);
+        assert!(p.contains("@@index(["), "expected @@index, got:\n{p}");
+        assert!(
+            p.contains("type: Gin"),
+            "expected type: Gin modifier, got:\n{p}"
+        );
+        assert!(
+            p.contains("@@unique([tenant_id, id]"),
+            "expected @@unique, got:\n{p}"
+        );
+        // btree is the default index method, so no `type:` modifier is emitted.
+        assert!(
+            !p.contains("type: Btree"),
+            "btree should not emit a type modifier, got:\n{p}"
         );
     }
 

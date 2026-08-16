@@ -267,6 +267,32 @@ pub struct ModelIndex {
     pub fields: Vec<String>,
     /// When true the constraint is UNIQUE.
     pub unique: bool,
+    /// Index method/type for engines that support it (`gin`, `gist`, `btree`,
+    /// `hash`, ...). Emitted as Postgres `USING <type>` / SeaQuery
+    /// `IndexType`.
+    pub index_type: Option<String>,
+    /// MySQL prefix length for the (first) indexed column, e.g. `-prefix 10`.
+    pub prefix_length: Option<u16>,
+    /// Partial-index predicate (`-where "deleted_at IS NULL"`). Emitted as a
+    /// `WHERE` clause on the index.
+    pub where_clause: Option<String>,
+    /// Column sort order for the (first) indexed column: `asc` or `desc`.
+    pub order: Option<String>,
+    /// `NULLS FIRST` / `NULLS LAST` placement (Postgres).
+    pub nulls: Option<String>,
+}
+
+/// Lockfile projection of a model-level index (see [`ModelIndex`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockIndex {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub unique: bool,
+    pub index_type: Option<String>,
+    pub prefix_length: Option<u16>,
+    pub where_clause: Option<String>,
+    pub order: Option<String>,
+    pub nulls: Option<String>,
 }
 
 impl Model {
@@ -367,13 +393,6 @@ pub struct LockModel {
     /// declared columns (composite). For legacy single-column PKs it holds the
     /// one field carrying `-pk`. Always non-empty for a valid model.
     pub primary_key: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockIndex {
-    pub name: String,
-    pub fields: Vec<String>,
-    pub unique: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,6 +497,11 @@ impl Ast {
                         name: i.name.clone(),
                         fields: i.fields.clone(),
                         unique: i.unique,
+                        index_type: i.index_type.clone(),
+                        prefix_length: i.prefix_length,
+                        where_clause: i.where_clause.clone(),
+                        order: i.order.clone(),
+                        nulls: i.nulls.clone(),
                     })
                     .collect();
                 indexes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -576,6 +600,11 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
             name: format!("uniq_{source_l}_id_{target_l}_id"),
             fields: vec![format!("{source_l}_id"), format!("{target_l}_id")],
             unique: true,
+            index_type: None,
+            prefix_length: None,
+            where_clause: None,
+            order: None,
+            nulls: None,
         }];
         models.push(LockModel {
             name: jname,

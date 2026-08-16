@@ -346,7 +346,8 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                     }
                 }
             }
-            // Model-level composite indexes (`-index a,b` / `-uniq a,b`).
+            // Model-level composite indexes (`-index a,b` / `-uniq a,b`) with
+            // optional Phase 1.2 options: -type, -prefix, -where, -order.
             if let Some(lm) = &lm {
                 for index in &lm.indexes {
                     let i = idx_binds.len();
@@ -356,10 +357,32 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                         name = index.name
                     );
                     for f in &index.fields {
-                        binds.push_str(&format!("\n        ix{i}.col(\"{f}\")"));
+                        if let Some(prefix) = index.prefix_length {
+                            binds.push_str(&format!(
+                                "\n        ix{i}.col((ColumnRef::Column(\"{f}\".into()), {prefix}))"
+                            ));
+                        } else {
+                            binds.push_str(&format!("\n        ix{i}.col(\"{f}\")"));
+                        }
                     }
                     if unique_lit {
                         binds.push_str(&format!("\n        ix{i}.unique()"));
+                    }
+                    if let Some(t) = &index.index_type {
+                        binds.push_str(&format!(
+                            "\n        ix{i}.index_type(IndexType::from(\"{t}\"))"
+                        ));
+                    }
+                    if let Some(w) = &index.where_clause {
+                        binds.push_str(&format!("\n        ix{i}.where_(\"{w}\")"));
+                    }
+                    if let Some(o) = &index.order {
+                        let ord = if o.eq_ignore_ascii_case("desc") {
+                            "Order::Desc"
+                        } else {
+                            "Order::Asc"
+                        };
+                        binds.push_str(&format!("\n        ix{i}.order({ord})"));
                     }
                     binds.push(';');
                     idx_binds.push(binds);
@@ -908,6 +931,11 @@ mod tests {
                     name: "uniq_tenant_id_email".into(),
                     fields: vec!["tenant_id".into(), "email".into()],
                     unique: true,
+                    index_type: None,
+                    prefix_length: None,
+                    where_clause: None,
+                    order: None,
+                    nulls: None,
                 }],
                 primary_key: vec![],
             }],

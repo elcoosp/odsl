@@ -453,3 +453,40 @@ fn rejects_composite_pk_missing_column() {
         }
     ));
 }
+
+#[test]
+fn parses_index_options() {
+    // Model-level index with Phase 1.2 options: -type, -prefix, -where, -order.
+    let src = "Post
+  id uuid -pk
+  tenant_id uuid
+  deleted_at datetime
+  -index tenant_id,deleted_at -type gin -where \"deleted_at IS NULL\" -order desc
+  -index tenant_id -prefix 10
+  -uniq tenant_id,id -type btree
+";
+    let ast = parse(src).unwrap();
+    let post = find_model(&ast, "Post");
+    let gin = post
+        .indexes
+        .iter()
+        .find(|i| i.fields == vec!["tenant_id".to_string(), "deleted_at".to_string()])
+        .expect("gin index present");
+    assert_eq!(gin.index_type.as_deref(), Some("gin"));
+    assert_eq!(gin.where_clause.as_deref(), Some("deleted_at IS NULL"));
+    assert_eq!(gin.order.as_deref(), Some("desc"));
+    assert!(!gin.unique);
+    let pref = post
+        .indexes
+        .iter()
+        .find(|i| i.fields == vec!["tenant_id".to_string()])
+        .expect("prefix index present");
+    assert_eq!(pref.prefix_length, Some(10));
+    let uniq = post
+        .indexes
+        .iter()
+        .find(|i| i.unique)
+        .expect("unique index present");
+    assert_eq!(uniq.index_type.as_deref(), Some("btree"));
+    assert_eq!(uniq.fields, vec!["tenant_id".to_string(), "id".to_string()]);
+}

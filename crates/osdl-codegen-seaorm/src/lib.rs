@@ -155,6 +155,14 @@ fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
                 syn::Ident::new(&to_pascal_case(&idx.name), proc_macro2::Span::call_site());
             let name_str = idx.name.clone();
             let unique = idx.unique;
+            let index_type = idx.index_type.clone();
+            // where_clause / prefix / order / nulls are emitted by the
+            // SeaQuery `Index::create()` builder in the migration codegen
+            // (migrate.rs), not via the entity-level Index trait.
+            let _where_clause = idx.where_clause.clone();
+            let _prefix = idx.prefix_length;
+            let _order = idx.order.clone();
+            let _nulls = idx.nulls.clone();
             let col_strs: Vec<TokenStream> = idx
                 .fields
                 .iter()
@@ -182,6 +190,9 @@ fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
                     }
                     fn columns(&self) -> Vec<&str> {
                         vec![#(#col_strs),*]
+                    }
+                    fn index_type(&self) -> Option<&str> {
+                        #index_type
                     }
                     fn is_composite(&self) -> bool {
                         true
@@ -773,5 +784,29 @@ User
         assert!(user_rs.contains("pub fn nth(n: usize) -> Option<Column>"));
         assert!(user_rs.contains("Some(Column::TenantId)"));
         assert!(user_rs.contains("Some(Column::UserId)"));
+    }
+
+    #[test]
+    fn index_options_render_in_entity() {
+        let ast = compile(
+            "Post
+  id uuid -pk
+  tenant_id uuid
+  deleted_at datetime
+  -index tenant_id,deleted_at -type gin -where \"deleted_at IS NULL\"
+",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmPostgres);
+        let files = renderer.render(&ast).unwrap();
+        let post_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/post.rs")
+            .unwrap()
+            .1
+            .clone();
+        // The entity declares the index and carries the GIN type + WHERE filter.
+        assert!(post_rs.contains("impl sea_orm::entity::Index"));
+        assert!(post_rs.contains("fn index_type(&self) -> Option<&str>"));
+        assert!(post_rs.contains("\"gin\""));
     }
 }

@@ -286,6 +286,11 @@ mod tests {
             name: "uniq_tenant_id_email".into(),
             fields: vec!["tenant_id".into(), "email".into()],
             unique: true,
+            index_type: None,
+            prefix_length: None,
+            where_clause: None,
+            order: None,
+            nulls: None,
         });
         ast.add_model(user);
         let lf = Lockfile::from_ast(&ast);

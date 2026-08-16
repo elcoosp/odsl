@@ -339,7 +339,13 @@ fn resolve_use_path(dir: &std::path::Path, use_path: &str) -> std::path::PathBuf
 }
 
 fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
-    // A model-level composite-index directive: `-index a,b` / `-uniq a,b`.
+    // A model-level composite-index directive: `-index a,b` / `-uniq a,b`,
+    // optionally followed by index option flags:
+    //   -type gin|gist|btree|hash   (index method)
+    //   -prefix 10                  (MySQL prefix length on first column)
+    //   -where "deleted_at IS NULL"  (partial-index predicate)
+    //   -order desc                 (sort order on first column)
+    //   -nulls first|last           (NULLS placement, Postgres)
     // Returns true if the tokens were consumed as such (so the caller should
     // not treat the line as a field).
     let (Some(RawToken::Flag(f)), Some(RawToken::Word(w))) = (tokens.first(), tokens.get(1)) else {
@@ -358,6 +364,56 @@ fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
     if fields.is_empty() {
         return false;
     }
+    // Parse trailing option flags.
+    let mut index_type: Option<String> = None;
+    let mut prefix_length: Option<u16> = None;
+    let mut where_clause: Option<String> = None;
+    let mut order: Option<String> = None;
+    let mut nulls: Option<String> = None;
+    let mut i = 2;
+    while i < tokens.len() {
+        if let RawToken::Flag(flag) = &tokens[i] {
+            match flag.as_str() {
+                "-type" => {
+                    if let Some(RawToken::Word(v)) = tokens.get(i + 1) {
+                        index_type = Some(v.clone());
+                        i += 2;
+                        continue;
+                    }
+                }
+                "-prefix" => {
+                    if let Some(RawToken::Word(v)) = tokens.get(i + 1) {
+                        prefix_length = v.parse::<u16>().ok();
+                        i += 2;
+                        continue;
+                    }
+                }
+                "-where" => {
+                    if let Some(RawToken::Quoted(v)) = tokens.get(i + 1) {
+                        where_clause = Some(v.clone());
+                        i += 2;
+                        continue;
+                    }
+                }
+                "-order" => {
+                    if let Some(RawToken::Word(v)) = tokens.get(i + 1) {
+                        order = Some(v.clone());
+                        i += 2;
+                        continue;
+                    }
+                }
+                "-nulls" => {
+                    if let Some(RawToken::Word(v)) = tokens.get(i + 1) {
+                        nulls = Some(v.clone());
+                        i += 2;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
     let idx_name = format!(
         "{}_{}",
         if unique { "uniq" } else { "idx" },
@@ -367,6 +423,11 @@ fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
         name: idx_name,
         fields,
         unique,
+        index_type,
+        prefix_length,
+        where_clause,
+        order,
+        nulls,
     });
     true
 }
