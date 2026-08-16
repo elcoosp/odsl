@@ -14,6 +14,7 @@
 use clap::{Parser, Subcommand};
 use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
+use osdl_codegen_erd::{ErdFormat, render as render_erd};
 use osdl_codegen_graphql::GraphQLRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
@@ -115,6 +116,22 @@ enum Command {
         /// Exit non-zero on warnings as well as errors.
         #[arg(long)]
         deny_warnings: bool,
+    },
+    /// Render an entity-relationship diagram (ERD) of the schema.
+    ///
+    /// Emits either a Mermaid `erDiagram` (Markdown-embeddable) or DBML
+    /// (dbdiagram.io compatible). Models become tables/nodes, scalar fields
+    /// become columns, and foreign-key references become relationship edges.
+    Erd {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Diagram dialect: `mermaid` or `dbml`.
+        #[arg(long, default_value = "mermaid")]
+        format: String,
+        /// Output file (defaults to stdout when omitted).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
 }
 
@@ -279,6 +296,7 @@ fn main() -> Result<(), OsdlError> {
             config,
             deny_warnings,
         } => cmd_lint(&input, config.as_deref(), deny_warnings),
+        Command::Erd { input, format, out } => cmd_erd(&input, &format, out.as_deref()),
         Command::Lsp => {
             osdl_lsp::run_stdio().map_err(|e| OsdlError::Io(std::io::Error::other(e.to_string())))
         }
@@ -1037,6 +1055,37 @@ fn cmd_lint(
     Ok(())
 }
 
+/// Render an entity-relationship diagram of the schema.
+///
+/// Produces a Mermaid `erDiagram` (default) or DBML document. The diagram is
+/// written to `--out` when given, otherwise printed to stdout.
+fn cmd_erd(
+    input: &std::path::Path,
+    format: &str,
+    out: Option<&std::path::Path>,
+) -> Result<(), OsdlError> {
+    let format = ErdFormat::from_str(format).ok_or_else(|| {
+        io_err(format!(
+            "unknown ERD format `{format}` (expected `mermaid` or `dbml`)"
+        ))
+    })?;
+    // ERD rendering needs no specific backend; validate against the default.
+    let ast = load_ast(input, Target::SeaOrmSqlite)?;
+    let (rel, body) =
+        render_erd(&ast, format).map_err(|e| io_err(format!("rendering ERD: {e}")))?;
+    match out {
+        Some(path) => {
+            std::fs::write(path, &body)
+                .map_err(|e| io_err(format!("writing {}: {e}", path.display())))?;
+            println!("wrote {} ({})", path.display(), rel);
+        }
+        None => {
+            print!("{body}");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,6 +1273,54 @@ Post
         // tolerance.
         cmd_migrate_test(&schema, osdl_core::Target::SeaOrmSqlite, &db_url, false)
             .expect("valid schema should pass migrate test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn erd_test_dir(tag: &str) -> std::path::PathBuf {
+        let n = MIGRATE_TEST_SEQ.fetch_add(1, SeqOrd::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("osdl-erdtest-{}-{}-{}", std::process::id(), tag, n));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn erd_renders_mermaid_and_dbml() {
+        let dir = erd_test_dir("basic");
+        let schema = dir.join("schema.osdl");
+        std::fs::write(
+            &schema,
+            "User
+  id uuid -pk
+  email string -uniq
+
+Post
+  id uuid -pk
+  author User.id
+  title string
+",
+        )
+        .unwrap();
+
+        // Mermaid: prints to stdout.
+        cmd_erd(&schema, "mermaid", None).expect("mermaid render");
+        // DBML: writes to a file.
+        let out = dir.join("schema.dbml");
+        cmd_erd(&schema, "dbml", Some(&out)).expect("dbml render");
+        let body = std::fs::read_to_string(&out).unwrap();
+        assert!(body.contains("Table User {"));
+        assert!(body.contains("Table Post {"));
+        assert!(body.contains("Ref: Post.author > User.id"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn erd_rejects_unknown_format() {
+        let dir = erd_test_dir("bad");
+        let schema = dir.join("schema.osdl");
+        std::fs::write(&schema, "User\n  id uuid -pk\n").unwrap();
+        let err = cmd_erd(&schema, "svg", None).unwrap_err();
+        assert!(format!("{err}").contains("unknown ERD format"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
