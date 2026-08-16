@@ -33,7 +33,7 @@ database, your API contract, and your frontend types.
 | `osdl-adapter` | Live DB adapters: SeaORM (SQLite/Postgres/MySQL) + MongoDB |
 | `osdl-lsp` | Language Server Protocol server (diagnostics, hover, go-to-def) |
 | `osdl-mcp` | Model Context Protocol server for AI agents |
-| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate`, `convert`, `fmt`, `pull`, `lsp`, `mcp` |
+| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate`, `convert`, `fmt`, `lint`, `erd`, `pull`, `lsp`, `mcp` |
 
 ## The OSDL surface syntax
 
@@ -175,6 +175,13 @@ osdl build --watch                       # rebuild on change
 osdl convert --direction to-prisma schema.osdl schema.prisma     # OSDL -> Prisma
 osdl convert --direction from-prisma schema.prisma schema.osdl    # Prisma -> OSDL
 
+# Lint the schema (configurable rules)
+osdl lint schema.osdl
+
+# Render an Entity-Relationship diagram
+osdl erd schema.osdl --format mermaid          # Mermaid (default)
+osdl erd schema.osdl --format dbml > erd.dbml  # dbdiagram.io / DBML
+
 # Reverse-engineer a live database into schema.osdl
 osdl pull --db-url postgres://localhost/app
 
@@ -191,6 +198,7 @@ osdl migrate up --db-url postgres://localhost/app       # ...or Postgres
 osdl migrate up --db-url mongodb://localhost:27017/app # ...or MongoDB
 osdl migrate down --db-url ...            # roll back to the desired state
 osdl migrate status --db-url ...          # diff lockfile / DB / schema
+osdl migrate test --db-url sqlite:///app.db  # apply migrations on a throwaway DB to verify they run
 
 # Editor + agent integrations
 osdl lsp                                  # Language Server Protocol over stdio
@@ -203,6 +211,8 @@ osdl mcp                                  # Model Context Protocol server over s
 `--db-url`, applies every op in the diff (CREATE/ALTER/DROP for SQL;
 `createCollection` / `collMod` validators for Mongo), then writes the new
 `osdl.lock`. Re-running is a no-op once the lockfile matches the schema.
+`osdl migrate test` applies the full migration history onto a throwaway
+database to prove the generated DDL actually runs end-to-end before you ship it.
 
 ## Building & testing
 
