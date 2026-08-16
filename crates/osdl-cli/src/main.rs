@@ -20,6 +20,7 @@ use osdl_codegen_jsonschema::JsonSchemaRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_codegen_seaorm::SeaOrmRenderer;
+use osdl_codegen_ts_validators::{TsValidatorRenderer, ValidatorFlavor};
 use osdl_codegen_typescript::TypeScriptRenderer;
 use osdl_core::Target;
 use osdl_core::ast::Ast;
@@ -455,6 +456,13 @@ fn run_build(
         Target::GraphQl => GraphQLRenderer::new(target).render(&ast)?,
         Target::OpenApi => OpenApiRenderer::new(target).render(&ast)?,
         Target::JsonSchema => JsonSchemaRenderer::new(target).render(&ast)?,
+        Target::Zod => TsValidatorRenderer::new(target, ValidatorFlavor::Zod).render(&ast)?,
+        Target::Valibot => {
+            TsValidatorRenderer::new(target, ValidatorFlavor::Valibot).render(&ast)?
+        }
+        Target::TypeBox => {
+            TsValidatorRenderer::new(target, ValidatorFlavor::TypeBox).render(&ast)?
+        }
     };
     std::fs::create_dir_all(out)?;
     for (rel, contents) in &files {

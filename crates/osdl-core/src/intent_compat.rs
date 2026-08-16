@@ -26,6 +26,15 @@ pub enum Target {
     /// JSON Schema (draft 2020-12) per model.
     #[value(name = "json-schema")]
     JsonSchema,
+    /// Zod runtime validator schemas (TypeScript).
+    #[value(name = "zod")]
+    Zod,
+    /// Valibot runtime validator schemas (TypeScript).
+    #[value(name = "valibot")]
+    Valibot,
+    /// TypeBox runtime validator schemas (TypeScript).
+    #[value(name = "typebox")]
+    TypeBox,
 }
 
 impl Target {
@@ -40,6 +49,9 @@ impl Target {
             Target::GraphQl => "graphql",
             Target::OpenApi => "openapi",
             Target::JsonSchema => "json-schema",
+            Target::Zod => "zod",
+            Target::Valibot => "valibot",
+            Target::TypeBox => "typebox",
         }
     }
 
@@ -55,7 +67,13 @@ impl Target {
     pub fn is_transpile(self) -> bool {
         matches!(
             self,
-            Target::TypeScript | Target::GraphQl | Target::OpenApi | Target::JsonSchema
+            Target::TypeScript
+                | Target::GraphQl
+                | Target::OpenApi
+                | Target::JsonSchema
+                | Target::Zod
+                | Target::Valibot
+                | Target::TypeBox
         )
     }
 }
@@ -73,6 +91,9 @@ impl FromStr for Target {
             "graphql" | "graphql-sdl" | "gql" => Ok(Target::GraphQl),
             "openapi" | "oas" | "swagger" => Ok(Target::OpenApi),
             "json-schema" | "jsonschema" | "json_schema" => Ok(Target::JsonSchema),
+            "zod" => Ok(Target::Zod),
+            "valibot" => Ok(Target::Valibot),
+            "typebox" => Ok(Target::TypeBox),
             other => Err(format!("unknown target `{other}`")),
         }
     }

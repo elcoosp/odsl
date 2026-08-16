@@ -10,6 +10,7 @@ members = [
     "crates/osdl-codegen-openapi",
     "crates/osdl-codegen-erd",
     "crates/osdl-codegen-jsonschema",
+    "crates/osdl-codegen-ts-validators",
     "crates/osdl-migrator",
     "crates/osdl-adapter",
     "crates/osdl-cli",
@@ -79,6 +80,7 @@ osdl-codegen-graphql = { path = "crates/osdl-codegen-graphql" }
 osdl-codegen-openapi = { path = "crates/osdl-codegen-openapi" }
 osdl-codegen-erd = { path = "crates/osdl-codegen-erd" }
 osdl-codegen-jsonschema = { path = "crates/osdl-codegen-jsonschema" }
+osdl-codegen-ts-validators = { path = "crates/osdl-codegen-ts-validators" }
 osdl-migrator = { path = "crates/osdl-migrator" }
 osdl-adapter = { path = "crates/osdl-adapter" }
 osdl-lsp = { path = "crates/osdl-lsp" }

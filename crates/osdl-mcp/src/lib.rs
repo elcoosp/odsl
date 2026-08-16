@@ -309,6 +309,21 @@ fn render_target(
         Target::GraphQl => osdl_codegen_graphql::GraphQLRenderer::new(target).render(ast),
         Target::OpenApi => osdl_codegen_openapi::OpenApiRenderer::new(target).render(ast),
         Target::JsonSchema => osdl_codegen_jsonschema::JsonSchemaRenderer::new(target).render(ast),
+        Target::Zod => osdl_codegen_ts_validators::TsValidatorRenderer::new(
+            target,
+            osdl_codegen_ts_validators::ValidatorFlavor::Zod,
+        )
+        .render(ast),
+        Target::Valibot => osdl_codegen_ts_validators::TsValidatorRenderer::new(
+            target,
+            osdl_codegen_ts_validators::ValidatorFlavor::Valibot,
+        )
+        .render(ast),
+        Target::TypeBox => osdl_codegen_ts_validators::TsValidatorRenderer::new(
+            target,
+            osdl_codegen_ts_validators::ValidatorFlavor::TypeBox,
+        )
+        .render(ast),
     }
 }
 
