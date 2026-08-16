@@ -128,6 +128,7 @@ fn rust_type_name(field: &osdl_core::Field) -> String {
             osdl_core::ScalarType::Uuid => "Uuid",
             osdl_core::ScalarType::Json => "Json",
             osdl_core::ScalarType::Binary => "Vec<u8>",
+            osdl_core::ScalarType::Decimal => "Decimal",
         }
         .to_string(),
         osdl_core::FieldType::Ref(r) => format!("{}", r),
@@ -176,6 +177,7 @@ fn sql_type_for(s: osdl_core::ScalarType) -> &'static str {
         osdl_core::ScalarType::Uuid => "UUID",
         osdl_core::ScalarType::Json => "JSONB",
         osdl_core::ScalarType::Binary => "BYTEA",
+        osdl_core::ScalarType::Decimal => "NUMERIC",
     }
 }
 

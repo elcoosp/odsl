@@ -85,6 +85,13 @@ pub trait SchemaAdapter: Send + Sync {
     async fn applied_migrations(&self) -> Result<Vec<String>, AdapterError> {
         Ok(Vec::new())
     }
+
+    /// Drop every user table/collection (and the OSDL history tracker) so a
+    /// migration test can start from a known-empty baseline. This is a
+    /// destructive, test-only operation.
+    async fn wipe(&self) -> Result<(), AdapterError> {
+        Ok(())
+    }
 }
 
 /// Connect to a live database described by `db_url` and return the matching
@@ -197,6 +204,63 @@ impl SqlAdapter {
             .map_err(|e| AdapterError::Exec(stmt.clone() + &e.to_string()))?;
         Ok(())
     }
+
+    /// List user tables (excludes the OSDL history tracker and system
+    /// catalogs) for the adapter's dialect.
+    async fn list_user_tables(&self) -> Result<Vec<String>, AdapterError> {
+        let sql = match self.dialect {
+            sql::SqlDialect::Sqlite => {
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> '_osdl_migrations'"
+            }
+            sql::SqlDialect::Postgres => {
+                "SELECT table_name FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE' \
+                 AND table_name <> '_osdl_migrations'"
+            }
+            sql::SqlDialect::Mysql => {
+                "SELECT table_name FROM information_schema.tables \
+                 WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' \
+                 AND table_name <> '_osdl_migrations'"
+            }
+        };
+        let stmt = sea_orm::Statement::from_string(self.dialect.to_db_backend(), sql.to_string());
+        let rows = self
+            .conn
+            .query_all_raw(stmt)
+            .await
+            .map_err(|e| AdapterError::Exec(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            if let Ok(name) = r.try_get_by_index::<String>(0) {
+                out.push(name);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Drop every user table and the history tracker (test-only reset).
+    async fn wipe_impl(&self) -> Result<(), AdapterError> {
+        let tables = self.list_user_tables().await?;
+        for table in tables {
+            // Table names come from the catalog (trusted) and are
+            // identifier-validated before interpolation.
+            if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            let drop = format!("DROP TABLE IF EXISTS \"{table}\"");
+            self.conn
+                .execute_unprepared(&drop)
+                .await
+                .map_err(|e| AdapterError::Exec(drop.clone() + &e.to_string()))?;
+        }
+        // Drop the history tracker last.
+        let drop_history = format!("DROP TABLE IF EXISTS \"{}\"", Self::HISTORY_TABLE);
+        self.conn
+            .execute_unprepared(&drop_history)
+            .await
+            .map_err(|e| AdapterError::Exec(drop_history.clone() + &e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -217,6 +281,10 @@ impl SchemaAdapter for SqlAdapter {
         SqlAdapter::applied_migrations(self).await
     }
 
+    async fn wipe(&self) -> Result<(), AdapterError> {
+        SqlAdapter::wipe_impl(self).await
+    }
+
     async fn apply(
         &self,
         plan: &MigrationPlan,
@@ -225,7 +293,9 @@ impl SchemaAdapter for SqlAdapter {
     ) -> Result<Vec<String>, AdapterError> {
         let mut applied = Vec::new();
         for op in &plan.ops {
-            for stmt in sql::op_to_sql(self.dialect, op, target, current) {
+            let stmts = sql::op_to_sql(self.dialect, op, target, current)
+                .map_err(|e| AdapterError::Render(format!("failed to render migration op: {e}")))?;
+            for stmt in stmts {
                 // Skip informational comments (SQLite ALTER COLUMN no-op).
                 if stmt.trim_start().starts_with("--") {
                     applied.push(stmt);
@@ -319,6 +389,23 @@ impl SchemaAdapter for MongoAdapter {
             }
         }
         Ok(applied)
+    }
+
+    async fn wipe(&self) -> Result<(), AdapterError> {
+        // Drop every collection in the database (test-only reset).
+        let names = self
+            .db
+            .list_collection_names()
+            .await
+            .map_err(|e| AdapterError::Exec(e.to_string()))?;
+        for name in names {
+            self.db
+                .collection::<mongodb::bson::Document>(&name)
+                .drop()
+                .await
+                .map_err(|e| AdapterError::Exec(format!("dropping {name}: {e}")))?;
+        }
+        Ok(())
     }
 }
 

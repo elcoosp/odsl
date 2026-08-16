@@ -110,7 +110,10 @@ fn render_sql(
     let up: Vec<String> = plan
         .ops
         .iter()
-        .flat_map(|op| op_to_sql(dialect, op, target, current))
+        .flat_map(|op| match op_to_sql(dialect, op, target, current) {
+            Ok(stmts) => stmts,
+            Err(e) => vec![format!("-- ERROR: migration could not be rendered: {e}")],
+        })
         .collect();
     // Down is the reverse op order with inverse statements.
     let down: Vec<String> = plan
@@ -262,8 +265,10 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                         let (ref_model, ref_col) = split_ref(f.ty.trim());
                         let ref_tbl = table_name(&ref_model);
                         let idx = fk_binds.len();
+                        let del = fk_action_str(&f.on_delete);
+                        let upd = fk_action_str(&f.on_update);
                         fk_binds.push(format!(
-                            "        let mut fk{idx} = ForeignKey::create();\n        fk{idx}.from(\"{tbl}\", \"{}\").to(\"{}\", \"{}\").on_delete(ForeignKeyAction::Cascade).on_update(ForeignKeyAction::Cascade);",
+                            "        let mut fk{idx} = ForeignKey::create();\n        fk{idx}.from(\"{tbl}\", \"{}\").to(\"{}\", \"{}\").on_delete({del}).on_update({upd});",
                             f.name, ref_tbl, ref_col
                         ));
                         fk_refs.push(format!(".foreign_key(&mut fk{idx})"));
@@ -348,12 +353,17 @@ fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
                 };
                 let (ref_model, ref_col) = split_ref(ty.trim());
                 let ref_tbl = table_name(&ref_model);
+                let (del, upd) = target
+                    .model_by_name(model)
+                    .and_then(|m| m.fields.iter().find(|f| f.name == *field))
+                    .map(|f| (fk_action_str(&f.on_delete), fk_action_str(&f.on_update)))
+                    .unwrap_or(("ForeignKeyAction::Cascade", "ForeignKeyAction::Cascade"));
                 vec![
                     format!(
                         "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .add_column({col})\n                .to_owned()\n        ).await?;"
                     ),
                     format!(
-                        "        let mut fk = ForeignKey::create();\n        fk.from(\"{tbl}\", \"{field}\").to(\"{ref_tbl}\", \"{ref_col}\").on_delete(ForeignKeyAction::Cascade).on_update(ForeignKeyAction::Cascade);\n        manager.create_foreign_key(fk).await?;"
+                        "        let mut fk = ForeignKey::create();\n        fk.from(\"{tbl}\", \"{field}\").to(\"{ref_tbl}\", \"{ref_col}\").on_delete({del}).on_update({upd});\n        manager.create_foreign_key(fk).await?;"
                     ),
                 ]
             } else {
@@ -434,6 +444,18 @@ fn split_ref(ty: &str) -> (String, String) {
     match ty.split_once('.') {
         Some((m, c)) => (m.to_string(), c.to_string()),
         None => (ty.to_string(), "id".to_string()),
+    }
+}
+
+/// Map a stored `-ondelete`/`-onupdate` keyword into the SeaORM
+/// `ForeignKeyAction` constant string. An unspecified action falls back to
+/// `Cascade` to preserve the historic (pre-1.3) migration output byte-for-byte.
+fn fk_action_str(keyword: &Option<String>) -> &'static str {
+    match keyword.as_deref() {
+        Some(s) => osdl_core::types::FkAction::from_keyword(s)
+            .map(|a| a.to_sea_orm())
+            .unwrap_or("ForeignKeyAction::Cascade"),
+        None => "ForeignKeyAction::Cascade",
     }
 }
 
@@ -765,6 +787,51 @@ mod tests {
     }
 
     #[test]
+    fn seaorm_migration_respects_on_delete_action() {
+        // A FK field carrying `-ondelete setnull` must render the matching
+        // SeaORM ForeignKeyAction, not the historic hard-coded Cascade.
+        let target = Lockfile {
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![
+                LockModel {
+                    name: "User".into(),
+                    fields: vec![lock_field("id", "uuid", &["-pk"])],
+                    indexes: vec![],
+                },
+                LockModel {
+                    name: "Post".into(),
+                    fields: vec![
+                        lock_field("id", "uuid", &["-pk"]),
+                        osdl_core::ast::LockField {
+                            name: "author".into(),
+                            ty: "User.id".into(),
+                            intents: vec![],
+                            enum_variants: vec![],
+                            default_value: None,
+                            m2m_target: None,
+                            check_expr: None,
+                            polymorphic_targets: vec![],
+                            on_delete: Some("setnull".into()),
+                            on_update: Some("restrict".into()),
+                        },
+                    ],
+                    indexes: vec![],
+                },
+            ],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "Post".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(out.contains("on_delete(ForeignKeyAction::SetNull)"));
+        assert!(out.contains("on_update(ForeignKeyAction::Restrict)"));
+        assert!(!out.contains("on_delete(ForeignKeyAction::Cascade)"));
+    }
+
+    #[test]
     fn seaorm_migration_emits_composite_model_index() {
         let target = Lockfile {
             version: Lockfile::VERSION,
@@ -866,8 +933,8 @@ mod tests {
     fn cli_style_addfield_index_via_from_ast() {
         // Mirrors cmd_migrate_create: parse -> Lockfile::from_ast -> render.
         let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
-        let mut ast = osdl_parser::parse(src).unwrap();
-        osdl_core::Validator::validate(&mut ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
+        let ast = osdl_parser::parse(src).unwrap();
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
         let target = Lockfile::from_ast(&ast);
         // Sanity: the parsed target carries -index on name.
         let name_intents = target
@@ -904,8 +971,8 @@ mod tests {
     fn cli_style_full_pipeline_index() {
         // Full cmd_migrate_create path: parse -> plan_migration(empty, ast) -> render.
         let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
-        let mut ast = osdl_parser::parse(src).unwrap();
-        osdl_core::Validator::validate(&mut ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
+        let ast = osdl_parser::parse(src).unwrap();
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap();
         let current = Lockfile {
             version: Lockfile::VERSION,
             checksum: String::new(),

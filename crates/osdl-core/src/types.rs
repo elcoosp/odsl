@@ -19,6 +19,7 @@ pub enum ScalarType {
     Uuid,
     Json,
     Binary,
+    Decimal,
 }
 
 impl ScalarType {
@@ -35,6 +36,7 @@ impl ScalarType {
             ScalarType::Uuid => "uuid",
             ScalarType::Json => "json",
             ScalarType::Binary => "binary",
+            ScalarType::Decimal => "numeric",
         }
     }
 
@@ -51,7 +53,58 @@ impl ScalarType {
             "uuid" => Some(ScalarType::Uuid),
             "json" => Some(ScalarType::Json),
             "binary" | "bytes" | "blob" => Some(ScalarType::Binary),
+            "decimal" | "numeric" | "decimal128" => Some(ScalarType::Decimal),
             _ => None,
+        }
+    }
+}
+
+/// Referential action for a foreign-key column on delete / on update.
+///
+/// Zero-stringly-typed: the parser accepts the OSDL keywords
+/// (`cascade`, `restrict`, `setnull`, `setdefault`, `noaction`) and stores this
+/// enum; the SQL layer maps it onto the backend's `ForeignKeyAction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FkAction {
+    Cascade,
+    Restrict,
+    SetNull,
+    SetDefault,
+    NoAction,
+}
+
+impl FkAction {
+    /// The canonical OSDL keyword for this action.
+    pub fn as_keyword(self) -> &'static str {
+        match self {
+            FkAction::Cascade => "cascade",
+            FkAction::Restrict => "restrict",
+            FkAction::SetNull => "setnull",
+            FkAction::SetDefault => "setdefault",
+            FkAction::NoAction => "noaction",
+        }
+    }
+
+    /// Parse an OSDL action keyword (case-insensitive).
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "cascade" => Some(FkAction::Cascade),
+            "restrict" => Some(FkAction::Restrict),
+            "setnull" | "set null" | "null" => Some(FkAction::SetNull),
+            "setdefault" | "set default" | "default" => Some(FkAction::SetDefault),
+            "noaction" | "no action" | "none" => Some(FkAction::NoAction),
+            _ => None,
+        }
+    }
+
+    /// The SeaORM `ForeignKeyAction` equivalent for SQL backends.
+    pub fn to_sea_orm(self) -> &'static str {
+        match self {
+            FkAction::Cascade => "ForeignKeyAction::Cascade",
+            FkAction::Restrict => "ForeignKeyAction::Restrict",
+            FkAction::SetNull => "ForeignKeyAction::SetNull",
+            FkAction::SetDefault => "ForeignKeyAction::SetDefault",
+            FkAction::NoAction => "ForeignKeyAction::NoAction",
         }
     }
 }
@@ -123,6 +176,12 @@ pub enum Intent {
     /// (`-polymorphic Post,Video`). Rendered as a `(target_type, target_id)`
     /// pair rather than a single foreign key.
     Polymorphic,
+    /// Referential action on deletion of the referenced row (`-ondelete
+    /// <action>`). The concrete value lives on `Field::on_delete`.
+    OnDelete,
+    /// Referential action on update of the referenced key (`-onupdate
+    /// <action>`). The concrete value lives on `Field::on_update`.
+    OnUpdate,
 }
 
 impl Intent {
@@ -144,6 +203,8 @@ impl Intent {
             Intent::SoftDelete => "-softdelete",
             Intent::Check => "-check",
             Intent::Polymorphic => "-polymorphic",
+            Intent::OnDelete => "-ondelete",
+            Intent::OnUpdate => "-onupdate",
         }
     }
 }

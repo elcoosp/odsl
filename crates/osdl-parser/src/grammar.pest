@@ -4,6 +4,8 @@
 //!
 //! ```text
 //! # comments start with '#'
+//! use user                       # module import (unquoted, ::-separated)
+//! use billing::invoice
 //! User                  # model declaration (top-level, no indentation)
 //!   id uuid -pk         # field: name, type, intent flag(s)
 //!   email string -uniq
@@ -26,7 +28,20 @@
 file    = { SOI ~ line* ~ EOI }
 
 line    = { indent ~ body ~ newline }
-body    = { name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | "" }
+body    = { use_stmt | type_decl | name ~ (sp ~ token)* | token ~ (sp ~ token)* | comment_part | doc_comment | "" }
+
+// A module import: `use path::to::module` (unquoted, `::`-separated). Resolved
+// by the project loader into additional source files merged into one AST.
+use_stmt    = { use_kw ~ sp ~ module_path }
+use_kw      = @{ "use" }
+module_path = @{ ident ~ ("::" ~ ident)* }
+
+// A custom type / value object: `type Email = string -check "x ~ 'y'"`.
+// Expands inlinely to its base scalar plus inherited intents/check.
+type_decl   = { type_kw ~ sp ~ ident ~ sp ~ equals ~ sp ~ type_rhs }
+type_kw     = @{ "type" }
+equals      = @{ "=" }
+type_rhs    = { word ~ (sp ~ token)* }
 
 indent  = @{ (" " | "\t")* }
 
@@ -50,6 +65,11 @@ ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident      = @{ ident_char+ }
 
 comment_part = { "#" ~ (!newline_char ~ ANY)* }
+
+// A documentation comment: `/// text`. Attached to the *next* model or field
+// declaration (whichever follows, at the matching indent). Multiple consecutive
+// `///` lines are accumulated. Not a structural token — purely documentation.
+doc_comment = { "///" ~ (!newline_char ~ ANY)* }
 
 newline      = _{ "\r\n" | "\n" | "\r" }
 newline_char = _{ "\n" | "\r" }

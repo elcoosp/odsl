@@ -84,6 +84,8 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         m2m_target: None,
         check_expr: None,
         polymorphic_targets: vec![],
+        on_delete: None,
+        on_update: None,
     }
 }
 
@@ -98,6 +100,8 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         m2m_target: None,
         check_expr: None,
         polymorphic_targets: vec![],
+        on_delete: None,
+        on_update: None,
     }
 }
 
@@ -118,6 +122,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -126,9 +131,12 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "email".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Uniq],
@@ -137,6 +145,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         ast.add_model(user);
@@ -178,6 +188,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "status".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![Intent::Enum],
@@ -186,6 +197,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         ast.add_model(user);
@@ -209,6 +222,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -217,9 +231,12 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "tenant_id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![],
@@ -228,9 +245,12 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 3,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "email".into(),
             ty: FieldType::Scalar(ScalarType::String),
             intents: vec![],
@@ -239,6 +259,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 4,
         });
         user.indexes.push(ModelIndex {
@@ -273,6 +295,7 @@ mod tests {
             indexes: vec![],
         };
         user.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -281,9 +304,12 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 1,
         });
         user.add_field(Field {
+            custom_type: None,
             name: "posts".into(),
             ty: FieldType::InferredRef("posts".into()),
             intents: vec![Intent::M2m],
@@ -292,6 +318,8 @@ mod tests {
             m2m_target: Some("Post".into()),
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 2,
         });
         let mut post = Model {
@@ -302,6 +330,7 @@ mod tests {
             indexes: vec![],
         };
         post.add_field(Field {
+            custom_type: None,
             name: "id".into(),
             ty: FieldType::Scalar(ScalarType::Uuid),
             intents: vec![Intent::Pk],
@@ -310,6 +339,8 @@ mod tests {
             m2m_target: None,
             check_expr: None,
             polymorphic_targets: vec![],
+            on_delete: None,
+            on_update: None,
             line: 4,
         });
         ast.add_model(user);

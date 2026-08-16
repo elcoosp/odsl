@@ -8,6 +8,11 @@ members = [
     "crates/osdl-codegen-typescript",
     "crates/osdl-codegen-graphql",
     "crates/osdl-codegen-openapi",
+    "crates/osdl-codegen-erd",
+    "crates/osdl-codegen-jsonschema",
+    "crates/osdl-codegen-ts-validators",
+    "crates/osdl-codegen-prisma",
+    "crates/osdl-codegen-trpc",
     "crates/osdl-migrator",
     "crates/osdl-adapter",
     "crates/osdl-cli",
@@ -48,6 +53,7 @@ prettyplease = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
+toml = "0.8"
 
 # Database Execution
 sea-orm = { version = "2.0", features = ["sqlx-sqlite", "sqlx-postgres", "sqlx-mysql", "runtime-tokio-native-tls"] }
@@ -74,6 +80,11 @@ osdl-codegen-mongo = { path = "crates/osdl-codegen-mongo" }
 osdl-codegen-typescript = { path = "crates/osdl-codegen-typescript" }
 osdl-codegen-graphql = { path = "crates/osdl-codegen-graphql" }
 osdl-codegen-openapi = { path = "crates/osdl-codegen-openapi" }
+osdl-codegen-erd = { path = "crates/osdl-codegen-erd" }
+osdl-codegen-jsonschema = { path = "crates/osdl-codegen-jsonschema" }
+osdl-codegen-ts-validators = { path = "crates/osdl-codegen-ts-validators" }
+osdl-codegen-prisma = { path = "crates/osdl-codegen-prisma" }
+osdl-codegen-trpc = { path = "crates/osdl-codegen-trpc" }
 osdl-migrator = { path = "crates/osdl-migrator" }
 osdl-adapter = { path = "crates/osdl-adapter" }
 osdl-lsp = { path = "crates/osdl-lsp" }

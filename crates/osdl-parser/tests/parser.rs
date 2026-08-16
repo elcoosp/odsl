@@ -3,7 +3,7 @@
 
 use osdl_core::ast::Ast;
 use osdl_core::errors::{CompileErrorKind, OsdlError};
-use osdl_core::types::{FieldType, Intent, ScalarType};
+use osdl_core::types::{FieldType, FkAction, Intent, ScalarType};
 use osdl_parser::infer;
 use osdl_parser::parse;
 use proptest::prelude::*;
@@ -159,4 +159,213 @@ proptest! {
         let model = &ast.models[idx];
         prop_assert_eq!(model.fields().count(), unique.len() + 1);
     }
+}
+
+// --- Module system (`use`) ---
+
+#[test]
+fn records_use_declarations_single_file() {
+    let src = "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n";
+    let file = osdl_parser::parse_file(src).unwrap();
+    assert_eq!(
+        file.uses,
+        vec!["user".to_string(), "billing::invoice".to_string()]
+    );
+    // The `use` lines are not modeled.
+    assert!(file.ast.model_by_name("user").is_none());
+    assert!(file.ast.model_by_name("Order").is_some());
+}
+
+#[test]
+fn resolves_and_merges_modules_via_use() {
+    let dir = std::env::temp_dir().join(format!("osdl-use-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let user_mod = dir.join("user.osdl");
+    let billing = dir.join("billing");
+    std::fs::create_dir_all(&billing).unwrap();
+    let invoice = billing.join("invoice.osdl");
+
+    std::fs::write(&user_mod, "User\n  id uuid -pk\n  email string -uniq\n").unwrap();
+    std::fs::write(&invoice, "Invoice\n  id uuid -pk\n  total int\n").unwrap();
+    std::fs::write(
+        dir.join("schema.osdl"),
+        "use user\nuse billing::invoice\nOrder\n  id uuid -pk\n  user User.id\n  invoice Invoice.id\n  total int\n",
+    )
+    .unwrap();
+
+    let project = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap();
+    // All three models merged into one AST.
+    assert!(project.ast.model_by_name("User").is_some());
+    assert!(project.ast.model_by_name("Invoice").is_some());
+    assert!(project.ast.model_by_name("Order").is_some());
+    // References resolved across files.
+    let order_idx = project.ast.model_by_name("Order").unwrap();
+    let order = &project.ast.models[order_idx];
+    let user_field = order.fields().find(|(_, f)| f.name == "user").unwrap().1;
+    assert!(matches!(&user_field.ty, FieldType::Ref(r) if r.model == "User"));
+    // Both imported files recorded as sources.
+    assert_eq!(project.sources.len(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn use_detects_duplicate_model_across_files() {
+    let dir = std::env::temp_dir().join(format!("osdl-use-dup-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("a.osdl"), "User\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("b.osdl"), "User\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("schema.osdl"), "use a\nuse b\n").unwrap();
+    let err = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap_err();
+    assert!(matches!(err, OsdlError::Parse(_)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn use_cycle_is_safe() {
+    // A cycle of `use` must not infinite-loop; it resolves to a merged AST.
+    let dir = std::env::temp_dir().join(format!("osdl-use-cycle-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("a.osdl"), "use b\nA\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("b.osdl"), "use a\nB\n  id uuid -pk\n").unwrap();
+    std::fs::write(dir.join("schema.osdl"), "use a\n").unwrap();
+    let project = osdl_parser::parse_project(&dir.join("schema.osdl")).unwrap();
+    assert!(project.ast.model_by_name("A").is_some());
+    assert!(project.ast.model_by_name("B").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- Custom types / value objects (`type X = ...`) ---
+
+#[test]
+fn parses_custom_type_and_expands_field() {
+    let src = "type Email = string -check \"email ~ '^[^@]+@[^@]+$'\"
+type Money = bigint -check \"value >= 0\"
+User
+  id uuid -pk
+  email Email -uniq
+  balance Money
+";
+    let ast = parse(src).unwrap();
+    assert!(ast.custom_type_by_name("Email").is_some());
+    assert!(ast.custom_type_by_name("Money").is_some());
+    let user = find_model(&ast, "User");
+    let email = find_field(user, "email");
+    assert_eq!(email.ty, FieldType::Scalar(ScalarType::String));
+    assert!(email.has(Intent::Check));
+    assert_eq!(email.check_expr.as_deref(), Some("email ~ '^[^@]+@[^@]+$'"));
+    assert!(email.has(Intent::Uniq));
+    assert_eq!(email.custom_type.as_deref(), Some("Email"));
+    let balance = find_field(user, "balance");
+    assert_eq!(balance.ty, FieldType::Scalar(ScalarType::BigInt));
+    assert_eq!(balance.check_expr.as_deref(), Some("value >= 0"));
+    assert_eq!(balance.custom_type.as_deref(), Some("Money"));
+}
+
+#[test]
+fn rejects_custom_type_without_scalar_base() {
+    let src = "type Broken = NotAScalar
+User
+  id uuid -pk
+";
+    let err = parse(src).unwrap_err();
+    assert!(matches!(err, OsdlError::Parse(_)));
+}
+
+#[test]
+fn parses_fk_referential_actions() {
+    let src = "User
+  id uuid -pk
+Post
+  id uuid -pk
+  author User.id -ondelete setnull -onupdate restrict
+";
+    let ast = parse(src).unwrap();
+    let post = find_model(&ast, "Post");
+    let author = find_field(post, "author");
+    assert_eq!(
+        author.ty,
+        FieldType::Ref(osdl_core::types::Reference {
+            model: "User".into(),
+            field: "id".into(),
+        })
+    );
+    assert!(author.has(Intent::OnDelete));
+    assert!(author.has(Intent::OnUpdate));
+    assert_eq!(author.on_delete, Some(FkAction::SetNull));
+    assert_eq!(author.on_update, Some(FkAction::Restrict));
+}
+
+#[test]
+fn rejects_invalid_on_delete_action() {
+    let src = "User
+  id uuid -pk
+Post
+  id uuid -pk
+  author User.id -ondelete bogus
+";
+    let err = parse(src).unwrap_err();
+    assert!(matches!(err, OsdlError::Parse(_)));
+}
+
+#[test]
+fn parses_model_and_field_doc_comments() {
+    let src = "/// A registered account holder.
+User
+  /// The user's primary email address.
+  email string -uniq
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    assert_eq!(ast.model_doc("User"), Some("A registered account holder."));
+    let _email = find_field(user, "email");
+    assert_eq!(
+        ast.field_doc("User", "email"),
+        Some("The user's primary email address.")
+    );
+}
+
+#[test]
+fn parses_multi_line_doc_comment() {
+    let src = "/// First line.
+/// Second line.
+User
+  id uuid -pk
+";
+    let ast = parse(src).unwrap();
+    assert_eq!(ast.model_doc("User"), Some("First line.\nSecond line."));
+}
+
+#[test]
+fn parses_deprecated_field_directive() {
+    let src = "User
+  id uuid -pk
+  email string -deprecated \"use contactEmail instead\"
+  contactEmail string
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    let _email = find_field(user, "email");
+    assert_eq!(
+        ast.field_deprecation("User", "email"),
+        Some("use contactEmail instead")
+    );
+    // The replacement field is not deprecated.
+    let _contact = find_field(user, "contactEmail");
+    assert_eq!(ast.field_deprecation("User", "contactEmail"), None);
+}
+
+#[test]
+fn doc_comments_do_not_alter_structure() {
+    let src = "/// doc
+User
+  /// field doc
+  id uuid -pk
+  email string -uniq -deprecated \"x\"
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    // No extra fields/fields created by docs.
+    assert_eq!(user.fields.len(), 2);
+    assert_eq!(ast.model_doc("User"), Some("doc"));
+    assert_eq!(ast.field_doc("User", "id"), Some("field doc"));
 }

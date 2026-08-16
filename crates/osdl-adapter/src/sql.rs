@@ -5,7 +5,10 @@
 //! double-quoted (ANSI SQL) so reserved words and mixed case are safe.
 
 use osdl_core::ast::LockModel;
+use osdl_core::lockfile::Lockfile;
 use osdl_migrator::MigrationOp;
+
+use crate::AdapterError;
 
 /// The SQL dialect the generator targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +31,15 @@ impl SqlDialect {
             None
         }
     }
+
+    /// Map to SeaORM's `DbBackend` for raw-statement construction.
+    pub fn to_db_backend(self) -> sea_orm::DbBackend {
+        match self {
+            SqlDialect::Sqlite => sea_orm::DbBackend::Sqlite,
+            SqlDialect::Postgres => sea_orm::DbBackend::Postgres,
+            SqlDialect::Mysql => sea_orm::DbBackend::MySql,
+        }
+    }
 }
 
 /// Map an OSDL scalar keyword to a column type for the dialect.
@@ -43,6 +55,7 @@ pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
         (SqlDialect::Sqlite, "uuid") => "TEXT",
         (SqlDialect::Sqlite, "json") => "TEXT",
         (SqlDialect::Sqlite, "binary") => "BLOB",
+        (SqlDialect::Sqlite, "numeric") => "NUMERIC",
         (SqlDialect::Postgres, "string") => "TEXT",
         (SqlDialect::Postgres, "int") => "INTEGER",
         (SqlDialect::Postgres, "bigint") => "BIGINT",
@@ -53,6 +66,7 @@ pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
         (SqlDialect::Postgres, "uuid") => "UUID",
         (SqlDialect::Postgres, "json") => "JSONB",
         (SqlDialect::Postgres, "binary") => "BYTEA",
+        (SqlDialect::Postgres, "numeric") => "NUMERIC",
         (SqlDialect::Mysql, "string") => "TEXT",
         (SqlDialect::Mysql, "int") => "INT",
         (SqlDialect::Mysql, "bigint") => "BIGINT",
@@ -63,6 +77,7 @@ pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
         (SqlDialect::Mysql, "uuid") => "CHAR(36)",
         (SqlDialect::Mysql, "json") => "JSON",
         (SqlDialect::Mysql, "binary") => "BLOB",
+        (SqlDialect::Mysql, "numeric") => "DECIMAL(38,10)",
         // Unknown keyword -> safest portable type.
         (_, _) => "TEXT",
     }
@@ -80,7 +95,7 @@ fn as_reference(ty: &str) -> Option<(&str, &str)> {
 }
 
 /// Render a single column definition for `CREATE TABLE`.
-fn column_def(dialect: SqlDialect, model: &LockModel, field: &osdl_core::ast::LockField) -> String {
+fn column_def(dialect: SqlDialect, field: &osdl_core::ast::LockField, lf: &Lockfile) -> String {
     use crate::naming::*;
     let name = quote_ident_for(dialect, &field.name);
     let is_pk = field.intents.iter().any(|i| i == "-pk");
@@ -89,11 +104,13 @@ fn column_def(dialect: SqlDialect, model: &LockModel, field: &osdl_core::ast::Lo
     let is_auto = field.intents.iter().any(|i| i == "-auto");
 
     let base_ty = if let Some((ref_model, ref_field)) = as_reference(&field.ty) {
-        // Foreign key: use the referenced PK type (uuid by default) and add a
-        // REFERENCES clause. OSDL references always target another model's id.
+        // Foreign key: use the *referenced model's* PK type (uuid/int/...),
+        // NOT a hard-coded uuid — a mismatch here breaks the join and the FK
+        // constraint on Postgres/MySQL.
+        let pk_kw = referenced_pk_keyword(lf, ref_model);
         format!(
             "{} REFERENCES {}({})",
-            column_type(dialect, "uuid"),
+            column_type(dialect, pk_kw),
             quote_ident_for(dialect, &table_name(ref_model)),
             quote_ident_for(dialect, ref_field)
         )
@@ -119,17 +136,33 @@ fn column_def(dialect: SqlDialect, model: &LockModel, field: &osdl_core::ast::Lo
     {
         def.push_str(&format!(" CHECK ({})", expr.trim()));
     }
-    let _ = model;
     def
 }
 
+/// Resolve the referenced model's primary-key scalar keyword (e.g. `uuid`,
+/// `int`), falling back to `uuid` only when the model cannot be found (it
+/// always should be — the validator guarantees references resolve).
+fn referenced_pk_keyword<'a>(lf: &'a Lockfile, ref_model: &str) -> &'a str {
+    let Some(m) = lf.model_by_name(ref_model) else {
+        return "uuid";
+    };
+    let Some(pk) = m
+        .fields
+        .iter()
+        .find(|f| f.intents.iter().any(|i| i == "-pk"))
+    else {
+        return "uuid";
+    };
+    &pk.ty
+}
+
 /// Build the `CREATE TABLE` statement for a model from its lockfile projection.
-pub fn create_table_sql(dialect: SqlDialect, model: &LockModel) -> String {
+pub fn create_table_sql(dialect: SqlDialect, model: &LockModel, lf: &Lockfile) -> String {
     use crate::naming::{quote_ident_for, table_name};
     let cols: Vec<String> = model
         .fields
         .iter()
-        .map(|f| column_def(dialect, model, f))
+        .map(|f| column_def(dialect, f, lf))
         .collect();
     format!(
         "CREATE TABLE {} (\n  {}\n)",
@@ -150,23 +183,21 @@ pub fn op_to_sql(
     op: &MigrationOp,
     target: &osdl_core::lockfile::Lockfile,
     current: Option<&osdl_core::lockfile::Lockfile>,
-) -> Vec<String> {
+) -> Result<Vec<String>, AdapterError> {
     use crate::naming::{quote_ident_for, table_name};
     match op {
         MigrationOp::CreateModel { model } => {
-            if let Some(m) = target.model_by_name(model) {
-                vec![create_table_sql(dialect, m)]
-            } else {
-                // Defensive: target should always carry the model.
-                vec![]
-            }
+            let m = target.model_by_name(model).ok_or_else(|| {
+                AdapterError::Render(format!(
+                    "create-model op references unknown model `{model}` (not present in target lockfile)"
+                ))
+            })?;
+            Ok(vec![create_table_sql(dialect, m, target)])
         }
-        MigrationOp::DropModel { model } => {
-            vec![format!(
-                "DROP TABLE {}",
-                quote_ident_for(dialect, &table_name(model))
-            )]
-        }
+        MigrationOp::DropModel { model } => Ok(vec![format!(
+            "DROP TABLE {}",
+            quote_ident_for(dialect, &table_name(model))
+        )]),
         MigrationOp::AddField {
             model,
             field,
@@ -178,7 +209,7 @@ pub fn op_to_sql(
             // foreign-key column, or a UNIQUE column in place — rebuild.
             let is_fk = as_reference(ty).is_some();
             if dialect == SqlDialect::Sqlite
-                && (!nullable || is_fk || *uniq)
+                && (!*nullable || is_fk || *uniq)
                 && let Some(cur) = current
                 && let Some(old) = cur.model_by_name(model)
                 && let Some(new_lm) = target.model_by_name(model)
@@ -186,9 +217,14 @@ pub fn op_to_sql(
                 let mut fields = new_lm.fields.clone();
                 // Ensure the new field is present even if `target` somehow lags.
                 if !fields.iter().any(|f| f.name == *field) {
-                    let col_ty = if is_fk { "uuid".into() } else { ty.clone() };
+                    // A freshly-added FK column takes the referenced PK type.
+                    let col_ty = if is_fk {
+                        referenced_pk_keyword(target, &split_ref(ty).0).to_string()
+                    } else {
+                        ty.clone()
+                    };
                     let mut intents = vec![];
-                    if !nullable {
+                    if !*nullable {
                         intents.push("-null".to_string());
                     }
                     if *uniq {
@@ -203,12 +239,16 @@ pub fn op_to_sql(
                         m2m_target: None,
                         check_expr: None,
                         polymorphic_targets: vec![],
+                        on_delete: None,
+                        on_update: None,
                     });
                 }
-                return sqlite_rebuild_sql(old, model, &fields);
+                return sqlite_rebuild_sql(old, model, &fields, target);
             }
+            // Non-rebuild path (Postgres/MySQL, or a nullable non-FK,
+            // non-unique column on SQLite).
             let col_ty = if is_fk {
-                column_type(dialect, "uuid")
+                column_type(dialect, referenced_pk_keyword(target, &split_ref(ty).0))
             } else {
                 column_type(dialect, ty)
             };
@@ -224,7 +264,7 @@ pub fn op_to_sql(
             if *uniq {
                 def.push_str(" UNIQUE");
             }
-            vec![def]
+            Ok(vec![def])
         }
         MigrationOp::DropField { model, field } => {
             // SQLite < 3.35 lacks DROP COLUMN; rebuild to be safe.
@@ -239,13 +279,13 @@ pub fn op_to_sql(
                     .filter(|f| f.name != *field)
                     .cloned()
                     .collect();
-                return sqlite_rebuild_sql(old, model, &kept);
+                return sqlite_rebuild_sql(old, model, &kept, target);
             }
-            vec![format!(
+            Ok(vec![format!(
                 "ALTER TABLE {} DROP COLUMN {}",
                 quote_ident_for(dialect, &table_name(model)),
                 quote_ident_for(dialect, field)
-            )]
+            )])
         }
         MigrationOp::AlterField {
             model,
@@ -254,23 +294,54 @@ pub fn op_to_sql(
             nullable,
             uniq,
         } => {
-            // SQLite cannot alter a column's type in place; Postgres/MySQL can.
+            // SQLite cannot alter a column in place; Postgres/MySQL can (and
+            // need separate statements for type, nullability and uniqueness).
             match dialect {
                 SqlDialect::Postgres | SqlDialect::Mysql => {
-                    let col_ty = if as_reference(new_ty).is_some() {
-                        column_type(dialect, "uuid")
+                    let is_fk = as_reference(new_ty).is_some();
+                    let col_ty = if is_fk {
+                        column_type(dialect, referenced_pk_keyword(target, &split_ref(new_ty).0))
                     } else {
                         column_type(dialect, new_ty)
                     };
-                    let def = format!(
+                    let mut stmts = vec![format!(
                         "ALTER TABLE {} ALTER COLUMN {} TYPE {}",
                         quote_ident_for(dialect, &table_name(model)),
                         quote_ident_for(dialect, field),
                         col_ty
-                    );
-                    let _ = nullable;
-                    let _ = uniq;
-                    vec![def]
+                    )];
+                    // Nullability change: separate SET/DROP NOT NULL statement.
+                    if *nullable {
+                        stmts.push(format!(
+                            "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL",
+                            quote_ident_for(dialect, &table_name(model)),
+                            quote_ident_for(dialect, field)
+                        ));
+                    } else {
+                        stmts.push(format!(
+                            "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL",
+                            quote_ident_for(dialect, &table_name(model)),
+                            quote_ident_for(dialect, field)
+                        ));
+                    }
+                    // Uniqueness change: add/drop a unique constraint.
+                    if *uniq {
+                        stmts.push(format!(
+                            "ALTER TABLE {} ADD CONSTRAINT {}_{}_key UNIQUE ({})",
+                            quote_ident_for(dialect, &table_name(model)),
+                            table_name(model),
+                            field,
+                            quote_ident_for(dialect, field)
+                        ));
+                    } else {
+                        stmts.push(format!(
+                            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {}_{}_key",
+                            quote_ident_for(dialect, &table_name(model)),
+                            table_name(model),
+                            field
+                        ));
+                    }
+                    Ok(stmts)
                 }
                 SqlDialect::Sqlite => {
                     // SQLite cannot ALTER COLUMN; rebuild the table preserving data.
@@ -282,27 +353,40 @@ pub fn op_to_sql(
                         // Apply the type/nullable/uniq change to the target field.
                         if let Some(f) = fields.iter_mut().find(|f| f.name == *field) {
                             let is_fk = as_reference(new_ty).is_some();
-                            f.ty = if is_fk { "uuid".into() } else { new_ty.clone() };
+                            f.ty = if is_fk {
+                                referenced_pk_keyword(target, &split_ref(new_ty).0).to_string()
+                            } else {
+                                new_ty.clone()
+                            };
                             f.intents.retain(|i| i != "-null");
-                            if !nullable && !f.intents.iter().any(|i| i == "-null") {
+                            if !*nullable && !f.intents.iter().any(|i| i == "-null") {
                                 f.intents.push("-null".into());
                             }
+                            f.intents.retain(|i| i != "-uniq");
                             if *uniq && !f.intents.iter().any(|i| i == "-uniq") {
                                 f.intents.push("-uniq".into());
                             }
                         }
-                        return sqlite_rebuild_sql(old, model, &fields);
+                        return sqlite_rebuild_sql(old, model, &fields, target);
                     }
                     // Best-effort: SQLite ignores the type but renaming to the
                     // same name is a no-op for type; emit a documented guard.
-                    vec![format!(
+                    Ok(vec![format!(
                         "-- sqlite: ALTER COLUMN unsupported; manual migration needed for {}.{}",
                         table_name(model),
                         field
-                    )]
+                    )])
                 }
             }
         }
+    }
+}
+
+/// Split a reference type keyword (`Model.field`) into its parts.
+fn split_ref(ty: &str) -> (String, String) {
+    match ty.split_once('.') {
+        Some((m, c)) => (m.to_string(), c.to_string()),
+        None => (ty.to_string(), "id".to_string()),
     }
 }
 
@@ -317,26 +401,48 @@ pub fn op_to_sql(
 /// 5. rename the shadow table into place
 /// 6. re-enable foreign keys
 ///
-/// This is OSDL's "12-step" SQLite rebuild, condensed to the essential,
-/// data-preserving statements.
+/// A freshly-added foreign-key column is made nullable in the shadow table and
+/// filled with `NULL` during the copy, because a NOT NULL uuid/text column
+/// cannot be populated from existing rows that have no such value.
 fn sqlite_rebuild_sql(
     old: &LockModel,
     new_model: &str,
     new_fields: &[osdl_core::ast::LockField],
-) -> Vec<String> {
+    lf: &Lockfile,
+) -> Result<Vec<String>, AdapterError> {
     use crate::naming::{quote_ident, table_name};
     let tbl = table_name(new_model);
     let shadow = format!("_osdl_new_{}", tbl);
+    // FK columns that are newly added must be nullable in the shadow so the
+    // copy INSERT can populate them with NULL.
+    let mut shadow_fields: Vec<osdl_core::ast::LockField> = new_fields
+        .iter()
+        .map(|f| {
+            let is_new_fk =
+                as_reference(&f.ty).is_some() && !old.fields.iter().any(|of| of.name == f.name);
+            if is_new_fk {
+                let mut f = f.clone();
+                if !f.intents.iter().any(|i| i == "-null") {
+                    f.intents.push("-null".to_string());
+                }
+                f
+            } else {
+                f.clone()
+            }
+        })
+        .collect();
+    shadow_fields.sort_by(|a, b| a.name.cmp(&b.name));
     let new_lm = LockModel {
         name: new_model.to_string(),
-        fields: new_fields.to_vec(),
+        fields: shadow_fields,
         indexes: vec![],
     };
-    let new_cols: Vec<String> = new_fields.iter().map(|f| quote_ident(&f.name)).collect();
+    let new_cols: Vec<String> = new_lm.fields.iter().map(|f| quote_ident(&f.name)).collect();
     // For the INSERT, select old columns where they exist; for new columns
     // (present in the target but not the old schema) emit a type-appropriate
-    // default literal so the NOT NULL constraint is satisfied.
-    let select_exprs: Vec<String> = new_fields
+    // default literal (NULL for references) so the constraint is satisfied.
+    let select_exprs: Vec<String> = new_lm
+        .fields
         .iter()
         .map(|f| {
             if old.fields.iter().any(|of| of.name == f.name) {
@@ -347,9 +453,9 @@ fn sqlite_rebuild_sql(
         })
         .collect();
 
-    vec![
+    Ok(vec![
         "PRAGMA foreign_keys=off;".to_string(),
-        create_table_sql(SqlDialect::Sqlite, &new_lm).replace(
+        create_table_sql(SqlDialect::Sqlite, &new_lm, lf).replace(
             &format!("CREATE TABLE {}", quote_ident(&tbl)),
             &format!("CREATE TABLE {}", quote_ident(&shadow)),
         ),
@@ -367,14 +473,15 @@ fn sqlite_rebuild_sql(
             quote_ident(&tbl)
         ),
         "PRAGMA foreign_keys=on;".to_string(),
-    ]
+    ])
 }
 
-/// A type-appropriate DEFAULT literal for a freshly-added NOT NULL column so
-/// the SQLite rebuild INSERT can satisfy the constraint.
+/// A type-appropriate DEFAULT literal for a freshly-added column so the SQLite
+/// rebuild INSERT can populate it. References use `NULL` (the shadow column is
+/// made nullable); scalars use `0` / `0.0` / `''`.
 fn default_literal(field: &osdl_core::ast::LockField) -> String {
     if as_reference(&field.ty).is_some() {
-        "''".to_string()
+        "NULL".to_string()
     } else {
         match field.ty.as_str() {
             "int" | "bigint" | "bool" => "0".to_string(),
@@ -392,6 +499,15 @@ mod tests {
     use osdl_core::lockfile::Lockfile;
     use osdl_core::lockfile::lock_field;
 
+    /// An empty lockfile (used for FK-resolution fallbacks in non-FK tests).
+    fn empty_lf() -> Lockfile {
+        Lockfile {
+            version: 1,
+            checksum: String::new(),
+            models: vec![],
+        }
+    }
+
     fn user_model() -> LockModel {
         LockModel {
             name: "User".into(),
@@ -405,7 +521,7 @@ mod tests {
 
     #[test]
     fn creates_sqlite_table() {
-        let sql = create_table_sql(SqlDialect::Sqlite, &user_model());
+        let sql = create_table_sql(SqlDialect::Sqlite, &user_model(), &empty_lf());
         assert!(sql.contains("CREATE TABLE \"users\""));
         assert!(sql.contains("\"id\" TEXT PRIMARY KEY"));
         assert!(sql.contains("\"email\" TEXT"));
@@ -415,7 +531,7 @@ mod tests {
 
     #[test]
     fn creates_postgres_table() {
-        let sql = create_table_sql(SqlDialect::Postgres, &user_model());
+        let sql = create_table_sql(SqlDialect::Postgres, &user_model(), &empty_lf());
         assert!(sql.contains("CREATE TABLE \"users\""));
         assert!(sql.contains("\"id\" UUID PRIMARY KEY"));
         assert!(sql.contains("\"email\" TEXT"));
@@ -424,7 +540,7 @@ mod tests {
 
     #[test]
     fn creates_mysql_table_with_backticks() {
-        let sql = create_table_sql(SqlDialect::Mysql, &user_model());
+        let sql = create_table_sql(SqlDialect::Mysql, &user_model(), &empty_lf());
         // MySQL uses backtick quoting and CHAR(36) for uuid.
         assert!(sql.contains("CREATE TABLE `users`"));
         assert!(sql.contains("`id` CHAR(36) PRIMARY KEY"));
@@ -448,7 +564,7 @@ mod tests {
             ],
             indexes: vec![],
         };
-        let sql = create_table_sql(SqlDialect::Mysql, &m);
+        let sql = create_table_sql(SqlDialect::Mysql, &m, &empty_lf());
         assert!(sql.contains("CHAR(36)"));
         assert!(sql.contains("TEXT"));
         assert!(sql.contains("BIGINT"));
@@ -471,7 +587,7 @@ mod tests {
             nullable: true,
             uniq: false,
         };
-        let stmts = op_to_sql(SqlDialect::Mysql, &op, &lf, None);
+        let stmts = op_to_sql(SqlDialect::Mysql, &op, &lf, None).unwrap();
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0], "ALTER TABLE `users` ADD COLUMN `age` INT");
     }
@@ -490,7 +606,7 @@ mod tests {
             nullable: true,
             uniq: false,
         };
-        let stmts = op_to_sql(SqlDialect::Mysql, &op, &lf, None);
+        let stmts = op_to_sql(SqlDialect::Mysql, &op, &lf, None).unwrap();
         assert_eq!(
             stmts[0],
             "ALTER TABLE `users` ALTER COLUMN `age` TYPE BIGINT"
@@ -507,8 +623,43 @@ mod tests {
             ],
             indexes: vec![],
         };
-        let sql = create_table_sql(SqlDialect::Postgres, &m);
+        let lf_with_user = Lockfile {
+            version: 1,
+            checksum: String::new(),
+            models: vec![user_model()],
+        };
+        let sql = create_table_sql(SqlDialect::Postgres, &m, &lf_with_user);
         assert!(sql.contains("REFERENCES \"users\"(\"id\")"));
+    }
+
+    #[test]
+    fn fk_resolves_referenced_pk_type() {
+        // A FK must take the *referenced model's* PK type, not a hard-coded uuid.
+        // Here User.id is `int`, so the FK column must be INTEGER (not TEXT/UUID).
+        let user = LockModel {
+            name: "User".into(),
+            fields: vec![lock_field("id", "int", &["-pk"])],
+            indexes: vec![],
+        };
+        let post = LockModel {
+            name: "Post".into(),
+            fields: vec![
+                lock_field("id", "uuid", &["-pk"]),
+                lock_field("author", "User.id", &[]),
+            ],
+            indexes: vec![],
+        };
+        let lf = Lockfile {
+            version: 1,
+            checksum: String::new(),
+            models: vec![user, post],
+        };
+        let sql = create_table_sql(SqlDialect::Postgres, lf.model_by_name("Post").unwrap(), &lf);
+        // INTEGER FK (matching the int PK), not UUID.
+        assert!(
+            sql.contains("\"author\" INTEGER REFERENCES \"users\"(\"id\")"),
+            "expected int-typed FK, got:\n{sql}"
+        );
     }
 
     #[test]
@@ -525,7 +676,7 @@ mod tests {
             nullable: true,
             uniq: false,
         };
-        let stmts = op_to_sql(SqlDialect::Sqlite, &op, &lf, None);
+        let stmts = op_to_sql(SqlDialect::Sqlite, &op, &lf, None).unwrap();
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0], "ALTER TABLE \"users\" ADD COLUMN \"age\" INTEGER");
     }
@@ -563,7 +714,7 @@ mod tests {
             nullable: false,
             uniq: false,
         };
-        let stmts = op_to_sql(SqlDialect::Sqlite, &op, &target, Some(&current));
+        let stmts = op_to_sql(SqlDialect::Sqlite, &op, &target, Some(&current)).unwrap();
         // 6-step rebuild: PRAGMA off, CREATE shadow, INSERT, DROP, RENAME, PRAGMA on.
         assert_eq!(stmts.len(), 6);
         assert!(
@@ -611,7 +762,7 @@ mod tests {
             model: "User".into(),
             field: "age".into(),
         };
-        let stmts = op_to_sql(SqlDialect::Sqlite, &op, &target, Some(&current));
+        let stmts = op_to_sql(SqlDialect::Sqlite, &op, &target, Some(&current)).unwrap();
         assert!(stmts.len() >= 5);
         assert!(stmts.iter().any(|s| s.contains("\"_osdl_new_users\"")));
     }

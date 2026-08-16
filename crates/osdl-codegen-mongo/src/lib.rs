@@ -129,6 +129,7 @@ fn scalar_rust_type(s: ScalarType) -> TokenStream {
         ScalarType::Uuid => quote! { bson::Uuid },
         ScalarType::Json => quote! { bson::Document },
         ScalarType::Binary => quote! { bson::Binary },
+        ScalarType::Decimal => quote! { bson::Decimal128 },
     }
 }
 
@@ -188,6 +189,7 @@ fn bson_type_for(field: &Field) -> String {
             ScalarType::Uuid => "uuid",
             ScalarType::Json => "object",
             ScalarType::Binary => "binData",
+            ScalarType::Decimal => "decimal",
         }
         .to_string(),
         FieldType::Ref(_) | FieldType::InferredRef(_) => "objectId".to_string(),

@@ -51,11 +51,12 @@ fn oas_scalar(s: ScalarType) -> Value {
         ScalarType::Uuid => json!({ "type": "string", "format": "uuid" }),
         ScalarType::Json => json!({}),
         ScalarType::Binary => json!({ "type": "string", "format": "binary" }),
+        ScalarType::Decimal => json!({ "type": "number", "format": "decimal" }),
     }
 }
 
 /// Build the OpenAPI property schema for a field.
-fn oas_property(field: &Field) -> Value {
+fn oas_property(field: &Field, model_name: &str, ast: &Ast) -> Value {
     let mut schema = match &field.ty {
         FieldType::Scalar(s) => oas_scalar(*s),
         FieldType::Ref(r) => json!({ "type": "string", "$comment": format!("FK -> {}", r.model) }),
@@ -80,6 +81,17 @@ fn oas_property(field: &Field) -> Value {
     {
         obj.insert("x-virtual".into(), json!(true));
     }
+    // Doc comment -> `description`; deprecation -> `deprecated: true`.
+    if let Some(doc) = ast.field_doc(model_name, &field.name)
+        && let Some(obj) = schema.as_object_mut()
+    {
+        obj.insert("description".into(), json!(doc));
+    }
+    if ast.field_deprecation(model_name, &field.name).is_some()
+        && let Some(obj) = schema.as_object_mut()
+    {
+        obj.insert("deprecated".into(), json!(true));
+    }
     schema
 }
 
@@ -92,7 +104,7 @@ fn build_openapi(ast: &Ast) -> Value {
             .models()
             .find(|(_, m)| &m.name == name)
             .expect("model exists");
-        schemas.insert(name.clone(), build_schema(model));
+        schemas.insert(name.clone(), build_schema(model, ast));
     }
     json!({
         "openapi": "3.1.0",
@@ -197,7 +209,7 @@ fn build_paths(ast: &Ast) -> Value {
     Value::Object(paths)
 }
 
-fn build_schema(model: &Model) -> Value {
+fn build_schema(model: &Model, ast: &Ast) -> Value {
     let mut props = serde_json::Map::new();
     let mut required: Vec<String> = Vec::new();
     let mut fields: Vec<&Field> = model.fields().map(|(_, f)| f).collect();
@@ -216,7 +228,7 @@ fn build_schema(model: &Model) -> Value {
             required.push(format!("{}_id", to_snake(&f.name)));
             continue;
         }
-        props.insert(f.name.clone(), oas_property(f));
+        props.insert(f.name.clone(), oas_property(f, &model.name, ast));
         if !f.has(Intent::Null) {
             required.push(f.name.clone());
         }
@@ -227,6 +239,10 @@ fn build_schema(model: &Model) -> Value {
     if !required.is_empty() {
         required.sort();
         schema.insert("required".into(), json!(required));
+    }
+    // Model-level description.
+    if let Some(doc) = ast.model_doc(&model.name) {
+        schema.insert("description".into(), json!(doc));
     }
     Value::Object(schema)
 }
@@ -300,5 +316,24 @@ mod tests {
         // The item path parameter references the PK type.
         let get_params = paths["/user/{id}"]["get"]["parameters"].as_array().unwrap();
         assert_eq!(get_params[0]["name"], json!("id"));
+    }
+
+    #[test]
+    fn emits_description_and_deprecation() {
+        let src = "/// A registered account holder.
+User
+  id uuid -pk
+  /// The user's primary email address.
+  email string -uniq -deprecated \"use contactEmail instead\"
+";
+        let doc = render(src);
+        let user = &doc["components"]["schemas"]["User"];
+        assert_eq!(user["description"], json!("A registered account holder."));
+        let email = &user["properties"]["email"];
+        assert_eq!(
+            email["description"],
+            json!("The user's primary email address.")
+        );
+        assert_eq!(email["deprecated"], json!(true));
     }
 }

@@ -333,7 +333,7 @@ fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
     use Intent::*;
     match intent {
         Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m
-        | Virtual | SoftDelete | Check | Polymorphic => true,
+        | Virtual | SoftDelete | Check | Polymorphic | OnDelete | OnUpdate => true,
         Fulltext => {
             // Full-text search only makes sense on textual types.
             matches!(ty, FieldType::Scalar(ScalarType::String))
@@ -372,9 +372,12 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
         ) => true,
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index
-        // Transpile targets (TS / GraphQL / OpenAPI) describe types only and
-        // support every intent as a documentation/constraint annotation.
-        (TypeScript | GraphQl | OpenApi, _) => true,
+        // FK referential actions: supported on every SQL backend; advisory on Mongo.
+        (SeaOrmSqlite | SeaOrmPostgres | SeaOrmMysql | Mongo, OnDelete | OnUpdate) => true,
+        // Transpile targets (TS / GraphQL / OpenAPI / JSON Schema / Zod /
+        // Valibot / TypeBox) describe types only and support every intent as a
+        // documentation/constraint annotation.
+        (TypeScript | GraphQl | OpenApi | JsonSchema | Zod | Valibot | TypeBox | Trpc, _) => true,
     }
 }
 
@@ -396,6 +399,7 @@ pub fn rust_type_for(scalar: ScalarType) -> &'static str {
         ScalarType::Uuid => "uuid::Uuid",
         ScalarType::Json => "serde_json::Value",
         ScalarType::Binary => "Vec<u8>",
+        ScalarType::Decimal => "Decimal",
     }
 }
 

@@ -80,6 +80,8 @@ pub enum CompileErrorKind {
     MissingKey { model: String },
     /// A target was requested that is unknown.
     UnknownTarget { target: String },
+    /// Import failure: a foreign schema (e.g. Prisma) could not be parsed.
+    Parse { message: String },
 }
 
 impl fmt::Display for CompileErrorKind {
@@ -119,6 +121,9 @@ impl fmt::Display for CompileErrorKind {
             }
             CompileErrorKind::UnknownTarget { target } => {
                 write!(f, "Unknown target `{target}`")
+            }
+            CompileErrorKind::Parse { message } => {
+                write!(f, "Parse error: {message}")
             }
         }
     }

@@ -10,9 +10,9 @@
 pub mod infer;
 
 use infer::infer_field_type;
-use osdl_core::ast::{Ast, Field, Model, ModelIndex};
+use osdl_core::ast::{Ast, CustomType, Field, Model, ModelIndex};
 use osdl_core::errors::{OsdlError, ParseError, Span};
-use osdl_core::types::{FieldType, Intent, Reference, ScalarType};
+use osdl_core::types::{FieldType, FkAction, Intent, Reference, ScalarType};
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
 use std::collections::HashSet;
@@ -35,6 +35,14 @@ enum RawToken {
         field: String,
     },
     Word(String),
+    /// A `use path::to::module` declaration (module import).
+    Use(String),
+    /// A `type Name = base -intents...` declaration (custom value object).
+    /// `rhs` holds the parsed RHS tokens (base scalar + intents/check).
+    TypeDecl {
+        name: String,
+        rhs: Vec<RawToken>,
+    },
     /// A quoted string literal (`"..."`); the inner content (quotes stripped)
     /// is stored verbatim, e.g. `-default ""` yields `Quoted("")`.
     Quoted(String),
@@ -46,6 +54,8 @@ struct ParsedLine {
     line_no: usize,
     byte_start: usize,
     byte_end: usize,
+    /// Doc-comment text from a `///` line, attached to the next declaration.
+    doc: Option<String>,
 }
 
 /// Parse OSDL source into a resolved [`Ast`] (inference applied).
@@ -53,8 +63,16 @@ pub fn parse_and_resolve(src: &str) -> Result<Ast, OsdlError> {
     parse(src)
 }
 
-/// Parse OSDL source into a resolved [`Ast`].
-pub fn parse(src: &str) -> Result<Ast, OsdlError> {
+/// A single parsed source file: its AST plus the `use` declarations it makes.
+pub struct FileAst {
+    pub ast: Ast,
+    /// Module paths referenced via `use` (e.g. `billing::invoice`).
+    pub uses: Vec<String>,
+}
+
+/// Parse a single OSDL source file into an [`Ast`] (inference applied).
+/// `use` declarations are recorded but not resolved (see [`parse_project`]).
+pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
     let pairs = grammar::OsdlParser::parse(Rule::file, src)
         .map_err(|e| OsdlError::Parse(ParseError::new(format!("parse error: {e}"))))?;
 
@@ -69,15 +87,57 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
         }
     }
 
+    // Pre-pass: collect custom type declarations (they may be referenced by
+    // fields declared earlier in the file, so gather them up front).
+    let mut custom_types: std::collections::HashMap<String, CustomType> = Default::default();
+    for pl in &parsed {
+        if pl.indent == 0
+            && let Some(RawToken::TypeDecl { name, rhs }) = pl.tokens.first()
+        {
+            let ct =
+                custom_type_from_tokens(name, rhs, src, pl.byte_start, pl.byte_end, pl.line_no)?
+                    .ok_or_else(|| {
+                        OsdlError::Parse(ParseError::new(format!(
+                            "invalid custom type declaration for `{name}`"
+                        )))
+                    })?;
+            custom_types.insert(name.clone(), ct);
+        }
+    }
+
     let mut ast = Ast::new();
     let mut current_model: Option<Model> = None;
+    let mut uses: Vec<String> = Vec::new();
+    // Doc comment (`///`) pending attachment to the next model/field declaration.
+    let mut pending_doc: Option<String> = None;
 
     for pl in &parsed {
+        // A `///` doc-comment line attaches to the next declaration. Consecutive
+        // `///` lines accumulate into one multi-line doc. It carries no structural
+        // tokens, so this check runs *before* the empty-token skip.
+        if let Some(doc) = &pl.doc {
+            pending_doc = Some(match pending_doc.take() {
+                Some(prev) => format!("{prev}\n{doc}"),
+                None => doc.clone(),
+            });
+            continue;
+        }
         // Comment-only / blank lines carry no tokens — skip them.
         if pl.tokens.is_empty() {
             continue;
         }
         if pl.indent == 0 {
+            // A `use` declaration is not a model.
+            if let Some(RawToken::Use(path)) = pl.tokens.first() {
+                uses.push(path.clone());
+                continue;
+            }
+            // A `type` declaration is not a model.
+            if let Some(RawToken::TypeDecl { name, .. }) = pl.tokens.first() {
+                let ct = custom_types.get(name).cloned().expect("collected above");
+                ast.add_custom_type(ct);
+                continue;
+            }
             if let Some(m) = current_model.take() {
                 ast.add_model(m);
             }
@@ -90,6 +150,10 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
                     ));
                 }
             };
+            // Attach any pending doc comment to this model.
+            if let Some(doc) = pending_doc.take() {
+                ast.model_docs.insert(name.clone(), doc);
+            }
             let mut model = Model {
                 name,
                 fields: la_arena::Arena::new(),
@@ -107,7 +171,10 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
                 add_field_from_tokens(
                     &mut model,
                     &field_tokens,
-                    &known_models,
+                    &FieldEnv {
+                        known_models: &known_models,
+                        custom_types: &custom_types,
+                    },
                     pl.line_no,
                     pl.byte_start,
                     pl.byte_end,
@@ -131,22 +198,138 @@ pub fn parse(src: &str) -> Result<Ast, OsdlError> {
             if capture_model_index(m, &pl.tokens) {
                 continue;
             }
-            add_field_from_tokens(
+            // Record the (model, field) key for doc/deprecation attachment.
+            let field_name = match pl.tokens.first() {
+                Some(RawToken::Name(n)) | Some(RawToken::Word(n)) => n.clone(),
+                _ => String::new(),
+            };
+            let (deprecated, _) = add_field_from_tokens(
                 m,
                 &pl.tokens,
-                &known_models,
+                &FieldEnv {
+                    known_models: &known_models,
+                    custom_types: &custom_types,
+                },
                 pl.line_no,
                 pl.byte_start,
                 pl.byte_end,
                 src,
             )?;
+            // Attach any pending doc comment to this field.
+            if let Some(doc) = pending_doc.take() {
+                ast.field_docs
+                    .insert((m.name.clone(), field_name.clone()), doc);
+            }
+            if let Some(reason) = deprecated {
+                ast.field_deprecated
+                    .insert((m.name.clone(), field_name), reason);
+            }
         }
     }
     if let Some(m) = current_model.take() {
         ast.add_model(m);
     }
 
-    Ok(ast)
+    Ok(FileAst { ast, uses })
+}
+
+/// Parse OSDL source into a resolved [`Ast`]. `use` declarations are parsed
+/// but not resolved (single-file view). For multi-file module resolution use
+/// [`parse_project`].
+pub fn parse(src: &str) -> Result<Ast, OsdlError> {
+    Ok(parse_file(src)?.ast)
+}
+
+/// The result of resolving a project: the merged [`Ast`] plus every source
+/// file that contributed to it (entry first), in deterministic order. Used by
+/// the lockfile to Merkle-hash all inputs.
+#[derive(Debug)]
+pub struct Project {
+    pub ast: Ast,
+    pub sources: Vec<std::path::PathBuf>,
+}
+
+/// Resolve a project rooted at `root` (an `.osdl` file). Recursively follows
+/// `use` declarations, merging each imported file's models into a single AST.
+///
+/// Resolution rules:
+/// * `use a::b::c` maps to `<root_dir>/a/b/c.osdl` (also tries `<root_dir>/a/b/c`
+///   without extension and `<root_dir>/a/b/c/mod.osdl`).
+/// * A model name may not collide across files (returns an error).
+/// * Cycles are detected via a visited set.
+pub fn parse_project(root: &std::path::Path) -> Result<Project, OsdlError> {
+    let mut ast = Ast::new();
+    let mut sources: Vec<std::path::PathBuf> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    resolve_file(root, &mut ast, &mut sources, &mut visited)?;
+    Ok(Project { ast, sources })
+}
+
+fn resolve_file(
+    path: &std::path::Path,
+    ast: &mut Ast,
+    sources: &mut Vec<std::path::PathBuf>,
+    visited: &mut HashSet<String>,
+) -> Result<(), OsdlError> {
+    let canon = std::fs::canonicalize(path).map_err(|e| {
+        OsdlError::Io(std::io::Error::other(format!(
+            "reading {}: {e}",
+            path.display()
+        )))
+    })?;
+    let key = canon.to_string_lossy().to_string();
+    if !visited.insert(key.clone()) {
+        return Ok(()); // already merged (cycle guard)
+    }
+
+    let src = std::fs::read_to_string(&canon).map_err(|e| {
+        OsdlError::Io(std::io::Error::other(format!(
+            "reading {}: {e}",
+            canon.display()
+        )))
+    })?;
+    let file_ast = parse_file(&src)?;
+
+    // Merge this file's models, detecting collisions.
+    for (_, model) in file_ast.ast.models() {
+        if ast.model_by_name(&model.name).is_some() {
+            return Err(OsdlError::Parse(ParseError::new(format!(
+                "duplicate model `{}` (imported via `use` from {})",
+                model.name,
+                canon.display()
+            ))));
+        }
+        ast.add_model(model.clone());
+    }
+    sources.push(canon.clone());
+
+    // Resolve imports relative to this file's directory.
+    let dir = canon.parent().unwrap_or_else(|| std::path::Path::new("."));
+    for use_path in &file_ast.uses {
+        let target = resolve_use_path(dir, use_path);
+        resolve_file(&target, ast, sources, visited)?;
+    }
+    Ok(())
+}
+
+/// Map `a::b::c` to a concrete `.osdl` path, trying a few conventions.
+fn resolve_use_path(dir: &std::path::Path, use_path: &str) -> std::path::PathBuf {
+    let rel = use_path.replace("::", "/");
+    let base = dir.join(&rel);
+    // Try, in order: <rel>.osdl, <rel>/mod.osdl, <rel> (bare).
+    let candidates = [
+        format!("{}.osdl", base.to_string_lossy()),
+        format!("{}/mod.osdl", base.to_string_lossy()),
+        base.to_string_lossy().to_string(),
+    ];
+    for c in &candidates {
+        let p = std::path::PathBuf::from(c);
+        if p.exists() {
+            return p;
+        }
+    }
+    // Default to the `.osdl` form even if it doesn't exist (error surfaces later).
+    std::path::PathBuf::from(format!("{}.osdl", base.to_string_lossy()))
 }
 
 fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
@@ -182,15 +365,22 @@ fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
     true
 }
 
+/// Shared lookup context for field parsing: the set of known model names and
+/// the custom-type table collected during the pre-pass.
+struct FieldEnv<'a> {
+    known_models: &'a HashSet<String>,
+    custom_types: &'a std::collections::HashMap<String, CustomType>,
+}
+
 fn add_field_from_tokens(
     model: &mut Model,
     tokens: &[RawToken],
-    known_models: &HashSet<String>,
+    env: &FieldEnv<'_>,
     line_no: usize,
     byte_start: usize,
     byte_end: usize,
     src: &str,
-) -> Result<(), OsdlError> {
+) -> Result<(Option<String>, Option<String>), OsdlError> {
     let mut iter = tokens.iter().peekable();
 
     let name = match iter.peek() {
@@ -219,6 +409,15 @@ fn add_field_from_tokens(
     let mut capturing_m2m = false;
     let mut capturing_check = false;
     let mut capturing_polymorphic = false;
+    let mut capturing_ondelete = false;
+    let mut capturing_onupdate = false;
+    let mut capturing_deprecated = false;
+    let mut on_delete: Option<FkAction> = None;
+    let mut on_update: Option<FkAction> = None;
+    let mut deprecated: Option<String> = None;
+    // If the field's type is a custom type, record its name and inherit its
+    // base scalar + constraints.
+    let mut custom_type: Option<String> = None;
 
     for tok in iter {
         match tok {
@@ -253,6 +452,24 @@ fn add_field_from_tokens(
                     // (e.g. `-polymorphic Post,Video`).
                     intents.push(Intent::Polymorphic);
                     capturing_polymorphic = true;
+                    continue;
+                }
+                if f == "-ondelete" {
+                    // The referential action follows as a separate word token
+                    // (e.g. `-ondelete cascade`).
+                    intents.push(Intent::OnDelete);
+                    capturing_ondelete = true;
+                    continue;
+                }
+                if f == "-onupdate" {
+                    intents.push(Intent::OnUpdate);
+                    capturing_onupdate = true;
+                    continue;
+                }
+                if f == "-deprecated" {
+                    // The reason follows as a separate quoted/word token
+                    // (e.g. `-deprecated "use contactEmail instead"`).
+                    capturing_deprecated = true;
                     continue;
                 }
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -302,9 +519,64 @@ fn add_field_from_tokens(
                         .collect();
                     continue;
                 }
+                if capturing_ondelete {
+                    capturing_ondelete = false;
+                    on_delete = Some(
+                        FkAction::from_keyword(w.trim()).ok_or_else(|| {
+                            OsdlError::Parse(
+                                ParseError::new(format!(
+                                    "invalid -ondelete action `{w}` (expected cascade|restrict|setnull|setdefault|noaction)"
+                                ))
+                                .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                            )
+                        })?,
+                    );
+                    continue;
+                }
+                if capturing_onupdate {
+                    capturing_onupdate = false;
+                    on_update = Some(
+                        FkAction::from_keyword(w.trim()).ok_or_else(|| {
+                            OsdlError::Parse(
+                                ParseError::new(format!(
+                                    "invalid -onupdate action `{w}` (expected cascade|restrict|setnull|setdefault|noaction)"
+                                ))
+                                .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                            )
+                        })?,
+                    );
+                    continue;
+                }
+                if capturing_deprecated {
+                    capturing_deprecated = false;
+                    deprecated = Some(w.trim().to_string());
+                    continue;
+                }
                 if capturing_m2m {
                     capturing_m2m = false;
                     m2m_target = Some(w.trim().to_string());
+                    continue;
+                }
+                if let Some(ct) = env.custom_types.get(w) {
+                    // This field is declared with a custom type: expand to its
+                    // base scalar and inherit its intents/check. The field
+                    // remains a normal scalar but carries the custom-type name.
+                    custom_type = Some(ct.name.clone());
+                    ty = Some(FieldType::Scalar(ct.base));
+                    for intent in &ct.intents {
+                        if !intents.contains(intent) {
+                            intents.push(*intent);
+                        }
+                    }
+                    if ct.enum_variants.is_empty() {
+                        enum_variants = ct.enum_variants.clone();
+                    }
+                    if ct.default_value.is_some() {
+                        default_value = ct.default_value.clone();
+                    }
+                    if ct.check_expr.is_some() {
+                        check_expr = ct.check_expr.clone();
+                    }
                     continue;
                 }
                 if let Some(target) = w.strip_prefix("relation:") {
@@ -312,7 +584,7 @@ fn add_field_from_tokens(
                     ty = Some(FieldType::InferredRef(format!("relation:{target}")));
                 } else if let Some(s) = ScalarType::from_keyword(w) {
                     ty = Some(FieldType::Scalar(s));
-                } else if known_models.contains(w) {
+                } else if env.known_models.contains(w) {
                     ty = Some(FieldType::Ref(Reference {
                         model: w.clone(),
                         field: "id".into(),
@@ -332,17 +604,26 @@ fn add_field_from_tokens(
                     check_expr = Some(q.clone());
                     continue;
                 }
+                if capturing_deprecated {
+                    capturing_deprecated = false;
+                    deprecated = Some(q.clone());
+                    continue;
+                }
                 // A bare quoted string as a type/ref token is unsupported;
                 // treat it as an inferred reference name (best-effort).
                 ty = Some(FieldType::InferredRef(q.clone()));
             }
             RawToken::Name(_) => unreachable!("name only appears as first token"),
+            RawToken::Use(_) => unreachable!("use only appears at indent 0, not as a field"),
+            RawToken::TypeDecl { .. } => {
+                unreachable!("type only appears at indent 0, not as a field")
+            }
         }
     }
 
     let ty = match ty {
         Some(t) => t,
-        None => infer_field_type(&name, known_models, &model.name),
+        None => infer_field_type(&name, env.known_models, &model.name),
     };
 
     model.add_field(Field {
@@ -354,9 +635,114 @@ fn add_field_from_tokens(
         m2m_target,
         check_expr,
         polymorphic_targets,
+        custom_type,
+        on_delete,
+        on_update,
         line: line_no,
     });
-    Ok(())
+    Ok((deprecated, None))
+}
+
+/// Build a [`CustomType`] from the RHS tokens of a `type X = ...` declaration.
+/// Returns `None` if the RHS has no base scalar (caller turns that into an error).
+fn custom_type_from_tokens(
+    name: &str,
+    rhs: &[RawToken],
+    src: &str,
+    byte_start: usize,
+    byte_end: usize,
+    line_no: usize,
+) -> Result<Option<CustomType>, OsdlError> {
+    let mut base: Option<ScalarType> = None;
+    let mut intents: Vec<Intent> = Vec::new();
+    let mut enum_variants: Vec<String> = Vec::new();
+    let mut default_value: Option<String> = None;
+    let mut check_expr: Option<String> = None;
+    let mut capturing_enum = false;
+    let mut capturing_default = false;
+    let mut capturing_check = false;
+
+    for tok in rhs {
+        match tok {
+            RawToken::Flag(f) => {
+                if f == "-enum" {
+                    intents.push(Intent::Enum);
+                    capturing_enum = true;
+                    continue;
+                }
+                if f == "-default" {
+                    intents.push(Intent::Default);
+                    capturing_default = true;
+                    continue;
+                }
+                if f == "-check" {
+                    intents.push(Intent::Check);
+                    capturing_check = true;
+                    continue;
+                }
+                let intent = parse_intent(f).ok_or_else(|| {
+                    OsdlError::Parse(
+                        ParseError::new(format!("unknown intent flag `{f}` in type `{name}`"))
+                            .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                    )
+                })?;
+                intents.push(intent);
+            }
+            RawToken::Word(w) => {
+                if capturing_enum {
+                    capturing_enum = false;
+                    enum_variants = w.split(',').map(|s| s.trim().to_string()).collect();
+                    continue;
+                }
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(w.trim().to_string());
+                    continue;
+                }
+                if capturing_check {
+                    capturing_check = false;
+                    check_expr = Some(w.trim().to_string());
+                    continue;
+                }
+                if let Some(s) = ScalarType::from_keyword(w) {
+                    base = Some(s);
+                } else {
+                    return Err(OsdlError::Parse(
+                        ParseError::new(format!(
+                            "custom type `{name}` must be based on a scalar, got `{w}`"
+                        ))
+                        .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                    ));
+                }
+            }
+            RawToken::Quoted(q) => {
+                if capturing_default {
+                    capturing_default = false;
+                    default_value = Some(q.clone());
+                    continue;
+                }
+                if capturing_check {
+                    capturing_check = false;
+                    check_expr = Some(q.clone());
+                    continue;
+                }
+                base = None; // invalid; error below
+            }
+            _ => {}
+        }
+    }
+
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    Ok(Some(CustomType {
+        name: name.to_string(),
+        base,
+        intents,
+        enum_variants,
+        default_value,
+        check_expr,
+    }))
 }
 
 fn parse_intent(flag: &str) -> Option<Intent> {
@@ -408,6 +794,7 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
 
     let mut indent = 0usize;
     let mut tokens = Vec::new();
+    let mut doc_accum: Option<String> = None;
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::indent => indent = inner.as_str().chars().count(),
@@ -441,6 +828,78 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
                             }
                         }
                         Rule::comment_part => { /* comments carry no tokens */ }
+                        Rule::doc_comment => {
+                            // Strip the leading `///` and surrounding whitespace.
+                            let raw = b.as_str();
+                            let text = raw.trim_start_matches("///").trim().to_string();
+                            // Accumulate into the line's doc (join multiple `///`).
+                            if let Some(existing) = &mut doc_accum {
+                                existing.push('\n');
+                                existing.push_str(&text);
+                            } else {
+                                doc_accum = Some(text);
+                            }
+                        }
+                        Rule::use_stmt => {
+                            // Extract the module path from the `use_kw ~ sp ~ module_path`.
+                            let mut path = String::new();
+                            for u in b.into_inner() {
+                                if u.as_rule() == Rule::module_path {
+                                    path = u.as_str().to_string();
+                                }
+                            }
+                            tokens.push(RawToken::Use(path));
+                        }
+                        Rule::type_decl => {
+                            // `type_kw ~ sp ~ ident ~ sp ~ equals ~ sp ~ type_rhs`
+                            let mut name = String::new();
+                            let mut rhs: Vec<RawToken> = Vec::new();
+                            for u in b.into_inner() {
+                                match u.as_rule() {
+                                    Rule::ident => name = u.as_str().to_string(),
+                                    Rule::type_rhs => {
+                                        for t in u.into_inner() {
+                                            match t.as_rule() {
+                                                Rule::word => {
+                                                    rhs.push(RawToken::Word(t.as_str().to_string()))
+                                                }
+                                                Rule::token => {
+                                                    let inner = t.into_inner().next().unwrap();
+                                                    match inner.as_rule() {
+                                                        Rule::flag => rhs.push(RawToken::Flag(
+                                                            inner.as_str().to_string(),
+                                                        )),
+                                                        Rule::reference => {
+                                                            let (m, f) =
+                                                                split_reference(inner.as_str());
+                                                            rhs.push(RawToken::Reference {
+                                                                model: m,
+                                                                field: f,
+                                                            });
+                                                        }
+                                                        Rule::quoted => {
+                                                            let s = inner.as_str();
+                                                            let q = if s.len() >= 2 {
+                                                                &s[1..s.len() - 1]
+                                                            } else {
+                                                                ""
+                                                            };
+                                                            rhs.push(RawToken::Quoted(
+                                                                q.to_string(),
+                                                            ));
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            tokens.push(RawToken::TypeDecl { name, rhs });
+                        }
                         _ => {}
                     }
                 }
@@ -455,6 +914,7 @@ fn parse_line(pair: Pair<Rule>, src: &str) -> Result<ParsedLine, OsdlError> {
         line_no,
         byte_start,
         byte_end,
+        doc: doc_accum,
     })
 }
 
