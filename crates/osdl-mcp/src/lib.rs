@@ -324,6 +324,7 @@ fn render_target(
             osdl_codegen_ts_validators::ValidatorFlavor::TypeBox,
         )
         .render(ast),
+        Target::Trpc => osdl_codegen_trpc::TrpcRenderer::new(target).render(ast),
     }
 }
 

@@ -20,6 +20,7 @@ use osdl_codegen_jsonschema::JsonSchemaRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_codegen_seaorm::SeaOrmRenderer;
+use osdl_codegen_trpc::TrpcRenderer;
 use osdl_codegen_ts_validators::{TsValidatorRenderer, ValidatorFlavor};
 use osdl_codegen_typescript::TypeScriptRenderer;
 use osdl_core::Target;
@@ -463,6 +464,7 @@ fn run_build(
         Target::TypeBox => {
             TsValidatorRenderer::new(target, ValidatorFlavor::TypeBox).render(&ast)?
         }
+        Target::Trpc => TrpcRenderer::new(target).render(&ast)?,
     };
     std::fs::create_dir_all(out)?;
     for (rel, contents) in &files {

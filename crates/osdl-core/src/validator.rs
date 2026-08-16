@@ -377,7 +377,7 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
         // Transpile targets (TS / GraphQL / OpenAPI / JSON Schema / Zod /
         // Valibot / TypeBox) describe types only and support every intent as a
         // documentation/constraint annotation.
-        (TypeScript | GraphQl | OpenApi | JsonSchema | Zod | Valibot | TypeBox, _) => true,
+        (TypeScript | GraphQl | OpenApi | JsonSchema | Zod | Valibot | TypeBox | Trpc, _) => true,
     }
 }
 

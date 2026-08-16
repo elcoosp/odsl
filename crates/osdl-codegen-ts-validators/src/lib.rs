@@ -140,6 +140,12 @@ fn with_unique(flavor: ValidatorFlavor, base: &str, unique: bool) -> String {
     }
 }
 
+/// Public Zod field expression (reused by the tRPC router renderer, which
+/// builds input/output schemas from the same Zod vocabulary).
+pub fn zod_field_schema(field: &Field) -> String {
+    field_schema(ValidatorFlavor::Zod, field)
+}
+
 /// Build the schema expression for a single field (with wrappers applied).
 fn field_schema(flavor: ValidatorFlavor, field: &Field) -> String {
     // Polymorphic references expand into a type/id pair.

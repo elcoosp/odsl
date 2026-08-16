@@ -35,6 +35,9 @@ pub enum Target {
     /// TypeBox runtime validator schemas (TypeScript).
     #[value(name = "typebox")]
     TypeBox,
+    /// tRPC v10 routers (Zod-validated CRUD) for the model set.
+    #[value(name = "trpc")]
+    Trpc,
 }
 
 impl Target {
@@ -52,6 +55,7 @@ impl Target {
             Target::Zod => "zod",
             Target::Valibot => "valibot",
             Target::TypeBox => "typebox",
+            Target::Trpc => "trpc",
         }
     }
 
@@ -74,6 +78,7 @@ impl Target {
                 | Target::Zod
                 | Target::Valibot
                 | Target::TypeBox
+                | Target::Trpc
         )
     }
 }
@@ -94,6 +99,7 @@ impl FromStr for Target {
             "zod" => Ok(Target::Zod),
             "valibot" => Ok(Target::Valibot),
             "typebox" => Ok(Target::TypeBox),
+            "trpc" => Ok(Target::Trpc),
             other => Err(format!("unknown target `{other}`")),
         }
     }
