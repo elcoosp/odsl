@@ -115,7 +115,12 @@ fn as_reference(ty: &str) -> Option<(&str, &str)> {
 }
 
 /// Render a single column definition for `CREATE TABLE`.
-fn column_def(dialect: SqlDialect, field: &osdl_core::ast::LockField, lf: &Lockfile) -> String {
+fn column_def(
+    dialect: SqlDialect,
+    field: &osdl_core::ast::LockField,
+    lf: &Lockfile,
+    pk_cols: &[String],
+) -> String {
     use crate::naming::*;
     let name = quote_ident_for(dialect, &field.name);
     let is_pk = field.intents.iter().any(|i| i == "-pk");
@@ -145,7 +150,10 @@ fn column_def(dialect: SqlDialect, field: &osdl_core::ast::LockField, lf: &Lockf
     };
 
     let mut def = format!("{name} {base_ty}");
-    if is_pk {
+    // Inline PRIMARY KEY only for a single-column key. Composite keys are
+    // emitted as a table-level PRIMARY KEY (...) constraint by create_table_sql.
+    let inline_pk = pk_cols.len() == 1 && pk_cols[0] == field.name;
+    if inline_pk {
         def.push_str(" PRIMARY KEY");
         if is_auto && dialect == SqlDialect::Sqlite {
             def.push_str(" AUTOINCREMENT");
@@ -185,15 +193,29 @@ fn referenced_pk_keyword<'a>(lf: &'a Lockfile, ref_model: &str) -> &'a str {
 /// Build the `CREATE TABLE` statement for a model from its lockfile projection.
 pub fn create_table_sql(dialect: SqlDialect, model: &LockModel, lf: &Lockfile) -> String {
     use crate::naming::{quote_ident_for, table_name};
+    let pk_cols = model.pk_columns().to_vec();
     let cols: Vec<String> = model
         .fields
         .iter()
-        .map(|f| column_def(dialect, f, lf))
+        .map(|f| column_def(dialect, f, lf, &pk_cols))
         .collect();
+    // Composite primary key: emit a table-level PRIMARY KEY (...) constraint
+    // instead of inline `PRIMARY KEY` on each column.
+    let extra = if pk_cols.len() > 1 {
+        let pk = pk_cols
+            .iter()
+            .map(|c| quote_ident_for(dialect, c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(",\n  PRIMARY KEY ({pk})")
+    } else {
+        String::new()
+    };
     format!(
-        "CREATE TABLE {} (\n  {}\n)",
+        "CREATE TABLE {} (\n  {}{}\n)",
         quote_ident_for(dialect, &table_name(&model.name)),
-        cols.join(",\n  ")
+        cols.join(",\n  "),
+        extra
     )
 }
 
@@ -474,6 +496,7 @@ fn sqlite_rebuild_sql(
         name: new_model.to_string(),
         fields: shadow_fields,
         indexes: vec![],
+        primary_key: vec![],
     };
     let new_cols: Vec<String> = new_lm.fields.iter().map(|f| quote_ident(&f.name)).collect();
     // For the INSERT, select old columns where they exist; for new columns
@@ -591,7 +614,46 @@ mod tests {
                 lock_field("email", "string", &["-uniq"]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }
+    }
+
+    fn composite_pk_model() -> LockModel {
+        LockModel {
+            name: "Membership".into(),
+            fields: vec![
+                lock_field("tenant_id", "uuid", &[]),
+                lock_field("user_id", "uuid", &[]),
+                lock_field("role", "string", &[]),
+            ],
+            indexes: vec![],
+            // Composite key declared at the model level.
+            primary_key: vec!["tenant_id".into(), "user_id".into()],
+        }
+    }
+
+    #[test]
+    fn creates_composite_primary_key_sqlite() {
+        let sql = create_table_sql(SqlDialect::Sqlite, &composite_pk_model(), &empty_lf());
+        assert!(sql.contains("CREATE TABLE \"memberships\""));
+        // No inline PRIMARY KEY on individual columns.
+        assert!(!sql.contains("\"tenant_id\" TEXT PRIMARY KEY"));
+        assert!(!sql.contains("\"user_id\" TEXT PRIMARY KEY"));
+        // A table-level composite PRIMARY KEY constraint.
+        assert!(sql.contains("PRIMARY KEY (\"tenant_id\", \"user_id\")"));
+    }
+
+    #[test]
+    fn creates_composite_primary_key_postgres() {
+        let sql = create_table_sql(SqlDialect::Postgres, &composite_pk_model(), &empty_lf());
+        assert!(sql.contains("PRIMARY KEY (\"tenant_id\", \"user_id\")"));
+    }
+
+    #[test]
+    fn creates_composite_primary_key_mysql() {
+        let sql = create_table_sql(SqlDialect::Mysql, &composite_pk_model(), &empty_lf());
+        // MySQL backtick-quotes the key columns.
+        assert!(sql.contains("PRIMARY KEY (`tenant_id`, `user_id`)"));
     }
 
     #[test]
@@ -638,6 +700,7 @@ mod tests {
                 lock_field("created", "datetime", &[]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         };
         let sql = create_table_sql(SqlDialect::Mysql, &m, &empty_lf());
         assert!(sql.contains("CHAR(36)"));
@@ -697,6 +760,7 @@ mod tests {
                 lock_field("author", "User.id", &[]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         };
         let lf_with_user = Lockfile {
             version: 1,
@@ -715,6 +779,7 @@ mod tests {
             name: "User".into(),
             fields: vec![lock_field("id", "int", &["-pk"])],
             indexes: vec![],
+            primary_key: vec![],
         };
         let post = LockModel {
             name: "Post".into(),
@@ -723,6 +788,7 @@ mod tests {
                 lock_field("author", "User.id", &[]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         };
         let lf = Lockfile {
             version: 1,
@@ -768,6 +834,7 @@ mod tests {
                 name: "User".into(),
                 fields: vec![lock_field("id", "uuid", &["-pk"])],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         };
         let target = Lockfile {
@@ -780,6 +847,7 @@ mod tests {
                     lock_field("age", "int", &[]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         };
         let op = MigrationOp::AddField {
@@ -822,6 +890,7 @@ mod tests {
                     lock_field("age", "int", &[]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         };
         let target = Lockfile {
@@ -831,6 +900,7 @@ mod tests {
                 name: "User".into(),
                 fields: vec![lock_field("id", "uuid", &["-pk"])],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         };
         let op = MigrationOp::DropField {

@@ -768,6 +768,7 @@ mod tests {
                     lock_field("email", "string", &["-uniq"]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         }
     }
@@ -821,6 +822,7 @@ mod tests {
                     name: "User".into(),
                     fields: vec![lock_field("id", "uuid", &["-pk"])],
                     indexes: vec![],
+                    primary_key: vec![],
                 },
                 LockModel {
                     name: "Post".into(),
@@ -829,6 +831,7 @@ mod tests {
                         lock_field("author", "User.id", &[]),
                     ],
                     indexes: vec![],
+                    primary_key: vec![],
                 },
             ],
         };
@@ -856,6 +859,7 @@ mod tests {
                     name: "User".into(),
                     fields: vec![lock_field("id", "uuid", &["-pk"])],
                     indexes: vec![],
+                    primary_key: vec![],
                 },
                 LockModel {
                     name: "Post".into(),
@@ -877,6 +881,7 @@ mod tests {
                         },
                     ],
                     indexes: vec![],
+                    primary_key: vec![],
                 },
             ],
         };
@@ -904,6 +909,7 @@ mod tests {
                     fields: vec!["tenant_id".into(), "email".into()],
                     unique: true,
                 }],
+                primary_key: vec![],
             }],
         };
         let plan = MigrationPlan {
@@ -937,6 +943,7 @@ mod tests {
                     lock_field("name", "string", &["-index"]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         };
         let plan = MigrationPlan {
@@ -967,6 +974,7 @@ mod tests {
                     lock_field("name", "string", &["-index"]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         };
         let plan = MigrationPlan {
@@ -1068,6 +1076,7 @@ mod tests {
                     lock_field("age", "int", &[]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         }
     }
@@ -1084,6 +1093,7 @@ mod tests {
                     lock_field("age", "bigint", &[]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             }],
         }
     }

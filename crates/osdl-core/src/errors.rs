@@ -78,6 +78,9 @@ pub enum CompileErrorKind {
     },
     /// BR-001: a model has no primary/partition key.
     MissingKey { model: String },
+    /// BR-001: a primary-key declaration is malformed (e.g. names a missing
+    /// column, or mixes model-level `-pk a,b` with a per-field `-pk`).
+    InvalidKey { model: String, reason: String },
     /// A target was requested that is unknown.
     UnknownTarget { target: String },
     /// Import failure: a foreign schema (e.g. Prisma) could not be parsed.
@@ -118,6 +121,9 @@ impl fmt::Display for CompileErrorKind {
                     f,
                     "Model `{model}` must declare exactly one primary (-pk) or partition (-partition) key"
                 )
+            }
+            CompileErrorKind::InvalidKey { model, reason } => {
+                write!(f, "Model `{model}` has an invalid primary key: {reason}")
             }
             CompileErrorKind::UnknownTarget { target } => {
                 write!(f, "Unknown target `{target}`")

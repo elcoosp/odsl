@@ -441,6 +441,7 @@ mod tests {
             field_index: Vec::new(),
             line,
             indexes: Vec::new(),
+            primary_key: Vec::new(),
         }
     }
 

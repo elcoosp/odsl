@@ -198,6 +198,7 @@ mod tests {
                 field_index: vec![],
                 line: 1,
                 indexes: vec![],
+                primary_key: vec![],
             };
             for (fname, ty, intents) in *fields {
                 m.add_field(Field {

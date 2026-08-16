@@ -19,6 +19,7 @@ async fn rebuild_preserves_data_on_add_not_null() {
             name: "User".into(),
             fields: vec![lock_field("id", "uuid", &["-pk"])],
             indexes: vec![],
+            primary_key: vec![],
         }],
     };
     // target = id + age(int not null).
@@ -32,6 +33,7 @@ async fn rebuild_preserves_data_on_add_not_null() {
                 lock_field("age", "int", &[]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }],
     };
 

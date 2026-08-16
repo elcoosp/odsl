@@ -48,7 +48,8 @@ pub fn build_validator(model: &LockModel) -> Document {
         };
         prop.insert("bsonType", btype);
 
-        let is_pk = field.intents.iter().any(|i| i == "-pk");
+        let is_pk =
+            field.intents.iter().any(|i| i == "-pk") || model.primary_key.contains(&field.name);
         let is_uniq = field.intents.iter().any(|i| i == "-uniq");
         let is_null = field.intents.iter().any(|i| i == "-null");
         if is_uniq {
@@ -238,6 +239,7 @@ mod tests {
                 lock_field("age", "int", &["-null"]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }
     }
 

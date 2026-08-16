@@ -64,21 +64,29 @@ pub fn render_prisma(ast: &Ast) -> String {
 fn render_model_prisma(model: &Model) -> String {
     let mut out = String::new();
     out.push_str(&format!("model {} {{\n", model.name));
+    // A model-level `-pk a,b` yields a composite primary key rendered as a
+    // Prisma `@@id([a, b])`. Per-field `@id` is suppressed in that case.
+    let composite_pk: Vec<String> = model.primary_key.clone();
+    let is_composite = composite_pk.len() > 1;
     let mut fields: Vec<&Field> = model.fields().map(|(_, f)| f).collect();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
     for f in &fields {
-        out.push_str(&format!("  {}\n", render_field_prisma(f)));
+        out.push_str(&format!("  {}\n", render_field_prisma(f, is_composite)));
+    }
+    if is_composite {
+        let cols = composite_pk.to_vec().join(", ");
+        out.push_str(&format!("  @@id([{cols}])\n"));
     }
     out.push_str("}\n");
     out
 }
 
-fn render_field_prisma(f: &Field) -> String {
+fn render_field_prisma(f: &Field, is_composite: bool) -> String {
     let nullable = f.has(Intent::Null);
     let q = if nullable { "?" } else { "" };
     let mut attrs: Vec<String> = Vec::new();
 
-    if f.has(Intent::Pk) {
+    if f.has(Intent::Pk) && !is_composite {
         attrs.push("@id".into());
         match &f.ty {
             FieldType::Scalar(ScalarType::Uuid) => attrs.push("@default(uuid())".into()),
@@ -233,6 +241,7 @@ pub fn parse_prisma(src: &str) -> Result<Ast, OsdlError> {
                 field_index: vec![],
                 line: i + 1,
                 indexes: vec![],
+                primary_key: vec![],
             };
             i += 1;
             while i < lines.len() {
@@ -560,6 +569,26 @@ mod tests {
         assert!(
             out.contains("price Decimal"),
             "expected `price Decimal`, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn composite_pk_renders_at_id() {
+        let src = "Membership
+  tenant_id uuid
+  user_id uuid
+  role string
+  -pk tenant_id,user_id
+";
+        let ast = osdl(src);
+        let p = render_prisma(&ast);
+        // Composite key → Prisma @@id([a, b]) at the model level, and no
+        // per-field @id (which would be the single-column form ` @id `).
+        assert!(p.contains("@@id([tenant_id, user_id])"), "got:\n{p}");
+        assert!(!p.contains(" @id "), "no per-field @id expected, got:\n{p}");
+        assert!(
+            !p.contains("@id @default"),
+            "no per-field @id expected, got:\n{p}"
         );
     }
 }

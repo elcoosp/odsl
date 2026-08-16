@@ -160,6 +160,7 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
                 field_index: vec![],
                 line: pl.line_no,
                 indexes: vec![],
+                primary_key: vec![],
             };
             // Model-level composite indexes: `-index a,b` / `-uniq a,b`
             // (may appear on the model-declaration line or as standalone lines).
@@ -196,6 +197,11 @@ pub fn parse_file(src: &str) -> Result<FileAst, OsdlError> {
             // A standalone indented line that begins with `-index`/`-uniq` is a
             // model-level composite-index directive, not a field.
             if capture_model_index(m, &pl.tokens) {
+                continue;
+            }
+            // A standalone indented line `-pk a,b` declares a composite primary
+            // key at the model level.
+            if capture_model_pk(m, &pl.tokens) {
                 continue;
             }
             // Record the (model, field) key for doc/deprecation attachment.
@@ -362,6 +368,33 @@ fn capture_model_index(model: &mut Model, tokens: &[RawToken]) -> bool {
         fields,
         unique,
     });
+    true
+}
+
+/// Parse a model-level composite primary-key directive: `-pk tenant_id,id`.
+/// Returns true if the tokens were consumed as such. Mirrors `capture_model_index`
+/// but populates `model.primary_key` instead of a secondary index. A model may
+/// declare at most one composite key; a second `-pk` line is ignored (last wins
+/// is avoided — we keep the first non-empty declaration to stay deterministic).
+fn capture_model_pk(model: &mut Model, tokens: &[RawToken]) -> bool {
+    let (Some(RawToken::Flag(f)), Some(RawToken::Word(w))) = (tokens.first(), tokens.get(1)) else {
+        return false;
+    };
+    if f != "-pk" {
+        return false;
+    }
+    let fields: Vec<String> = w
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if fields.is_empty() {
+        return false;
+    }
+    // Only set when not already declared, so duplicate `-pk` lines are stable.
+    if model.primary_key.is_empty() {
+        model.primary_key = fields;
+    }
     true
 }
 

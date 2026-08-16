@@ -63,9 +63,32 @@ impl Validator {
     /// BR-001: every model must declare exactly one primary/partition key.
     fn check_keys(ast: &Ast) -> Result<(), OsdlError> {
         for (_midx, model) in ast.models() {
+            // A model-level `-pk a,b` declaration wins (composite key).
+            if !model.primary_key.is_empty() {
+                // Mixing model-level `-pk` with per-field `-pk` is ambiguous.
+                if model.fields().any(|(_, f)| f.has(crate::types::Intent::Pk)) {
+                    return Err(OsdlError::compile(CompileErrorKind::InvalidKey {
+                        model: model.name.clone(),
+                        reason: "model declares both `-pk a,b` and a `-pk` field".to_string(),
+                    }));
+                }
+                // Every named column must exist on the model.
+                for col in &model.primary_key {
+                    if model.field_by_name(col).is_none() {
+                        return Err(OsdlError::compile(CompileErrorKind::InvalidKey {
+                            model: model.name.clone(),
+                            reason: format!("primary key column `{col}` does not exist"),
+                        }));
+                    }
+                }
+                continue;
+            }
+            // Legacy form: exactly one field carries `-pk`.
             let keys = model
                 .fields()
-                .filter(|(_, f)| f.has(Intent::Pk) || f.has(Intent::Partition))
+                .filter(|(_, f)| {
+                    f.has(crate::types::Intent::Pk) || f.has(crate::types::Intent::Partition)
+                })
                 .count();
             if keys != 1 {
                 return Err(OsdlError::compile(CompileErrorKind::MissingKey {

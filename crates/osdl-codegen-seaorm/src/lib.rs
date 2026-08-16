@@ -49,10 +49,12 @@ impl CodeRenderer for SeaOrmRenderer {
 fn render_model(model: &Model, ast: &Ast, target: Target) -> Result<String, OsdlError> {
     let table_name = to_snake_plural(&model.name);
 
+    let composite_pk: Vec<String> = model.primary_key.clone();
+    let is_composite = composite_pk.len() > 1;
     let mut field_defs: Vec<TokenStream> = Vec::new();
     let mut enum_defs: Vec<TokenStream> = Vec::new();
     for (_fidx, field) in model.fields() {
-        field_defs.push(render_field(field, ast, &model.name, target));
+        field_defs.push(render_field(field, ast, &model.name, target, &composite_pk));
         if field.has(Intent::Enum) && !field.enum_variants.is_empty() {
             enum_defs.push(render_active_enum(field));
         }
@@ -84,6 +86,40 @@ fn render_model(model: &Model, ast: &Ast, target: Target) -> Result<String, Osdl
             #attr
             #tokens
             #defs
+        }
+    } else {
+        tokens
+    };
+
+    // Composite primary key (model-level `-pk a,b`): emit a PrimaryKey impl
+    // marked `#[sea_orm(composite_primary_key)]` listing the key columns in
+    // order, mirroring what `sea-orm-cli` generates for composite keys.
+    let tokens = if is_composite {
+        let pk_arms: Vec<TokenStream> = model
+            .primary_key
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let idx = proc_macro2::Literal::usize_unsuffixed(i);
+                let v = syn::Ident::new(&to_pascal_case(c), proc_macro2::Span::call_site());
+                quote! { #idx => Some(Column::#v) }
+            })
+            .collect();
+        quote! {
+            #tokens
+
+            #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+            pub struct PrimaryKey;
+
+            #[sea_orm(composite_primary_key)]
+            impl PrimaryKey {
+                pub fn nth(n: usize) -> Option<Column> {
+                    match n {
+                        #(#pk_arms,)*
+                        _ => None,
+                    }
+                }
+            }
         }
     } else {
         tokens
@@ -157,7 +193,13 @@ fn render_indexes(model: &Model) -> Option<(TokenStream, TokenStream)> {
     Some((attr, quote! { #(#defs)* }))
 }
 
-fn render_field(field: &Field, ast: &Ast, model_name: &str, _target: Target) -> TokenStream {
+fn render_field(
+    field: &Field,
+    ast: &Ast,
+    model_name: &str,
+    _target: Target,
+    composite_pk: &[String],
+) -> TokenStream {
     let name = syn::Ident::new(&field.name, proc_macro2::Span::call_site());
 
     // Doc comment + deprecation for this field.
@@ -243,7 +285,11 @@ fn render_field(field: &Field, ast: &Ast, model_name: &str, _target: Target) -> 
     // Plain column.
     let ty = rust_type_for_field(field, _target);
     let mut attrs: Vec<TokenStream> = Vec::new();
-    if field.has(Intent::Pk) {
+    // A field is part of the primary key if it carries `-pk` OR it is named in a
+    // model-level composite key (`-pk a,b`). Composite keys still mark each
+    // column with `primary_key` so SeaORM can derive the CompositePrimaryKey.
+    let in_composite = composite_pk.iter().any(|c| c == &field.name);
+    if field.has(Intent::Pk) || in_composite {
         attrs.push(quote! { #[sea_orm(primary_key)] });
         if field.has(Intent::Auto) {
             if !matches!(&field.ty, FieldType::Scalar(ScalarType::Uuid)) {
@@ -700,5 +746,32 @@ User
         // Field doc + deprecation on email.
         assert!(user_rs.contains("The user's primary email address."));
         assert!(user_rs.contains("#[deprecated = \"use contactEmail instead\"]"));
+    }
+
+    #[test]
+    fn composite_pk_renders_composite_primary_key() {
+        let ast = compile(
+            "Membership
+  tenant_id uuid
+  user_id uuid
+  role string
+  -pk tenant_id,user_id
+",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/membership.rs")
+            .unwrap()
+            .1
+            .clone();
+        // Each composite-key column still carries primary_key; the entity also
+        // declares a CompositePrimaryKey mapping the key columns in order.
+        assert!(user_rs.contains("#[sea_orm(primary_key)]"));
+        assert!(user_rs.contains("composite_primary_key"));
+        assert!(user_rs.contains("pub fn nth(n: usize) -> Option<Column>"));
+        assert!(user_rs.contains("Some(Column::TenantId)"));
+        assert!(user_rs.contains("Some(Column::UserId)"));
     }
 }

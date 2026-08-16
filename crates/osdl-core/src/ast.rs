@@ -251,6 +251,11 @@ pub struct Model {
     /// Model-level composite indexes (`-index a,b`) and unique constraints
     /// (`-uniq a,b`). Field-level `-index`/`-uniq` are stored on the field.
     pub indexes: Vec<ModelIndex>,
+    /// Composite primary key declared with a model-level `-pk a,b` line.
+    /// When non-empty, these field names form the (composite) primary key and
+    /// individual fields must NOT carry `-pk`. When empty, the primary key is
+    /// taken from fields carrying the `-pk` intent (legacy single-column form).
+    pub primary_key: Vec<String>,
 }
 
 /// A composite index/unique constraint declared at the model level.
@@ -281,6 +286,23 @@ impl Model {
 
     pub fn fields(&self) -> impl Iterator<Item = (FieldIdx, &Field)> {
         self.fields.iter()
+    }
+
+    /// Resolve the primary-key column names for this model.
+    ///
+    /// A model-level `-pk a,b` declaration takes precedence (composite keys).
+    /// Otherwise the key is the set of fields carrying the `-pk` intent
+    /// (the legacy single-column form). Always returns at least one column
+    /// for a model that passed validation.
+    pub fn pk_columns(&self) -> Vec<String> {
+        if !self.primary_key.is_empty() {
+            return self.primary_key.clone();
+        }
+        self.fields
+            .iter()
+            .filter(|(_, f)| f.has(crate::types::Intent::Pk))
+            .map(|(_, f)| f.name.clone())
+            .collect()
     }
 }
 
@@ -341,6 +363,10 @@ pub struct LockModel {
     pub fields: Vec<LockField>,
     /// Model-level composite indexes / unique constraints.
     pub indexes: Vec<LockIndex>,
+    /// Primary-key column names. For a model-level `-pk a,b` this holds all
+    /// declared columns (composite). For legacy single-column PKs it holds the
+    /// one field carrying `-pk`. Always non-empty for a valid model.
+    pub primary_key: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +408,20 @@ pub struct LockField {
 impl LockModel {
     pub fn field_by_name(&self, name: &str) -> Option<&LockField> {
         self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// Primary-key column names (composite when `primary_key` has >1 entry).
+    /// Falls back to fields carrying the per-field `-pk` intent for the legacy
+    /// single-column-key form.
+    pub fn pk_columns(&self) -> Vec<String> {
+        if !self.primary_key.is_empty() {
+            return self.primary_key.clone();
+        }
+        self.fields
+            .iter()
+            .filter(|f| f.intents.iter().any(|i| i == "-pk"))
+            .map(|f| f.name.clone())
+            .collect()
     }
 }
 
@@ -445,6 +485,7 @@ impl Ast {
                     name: m.name.clone(),
                     fields,
                     indexes,
+                    primary_key: m.pk_columns(),
                 }
             })
             .collect();
@@ -540,6 +581,7 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
             name: jname,
             fields,
             indexes,
+            primary_key: vec![format!("{source_l}_id"), format!("{target_l}_id")],
         });
     }
     models.sort_by(|a, b| a.name.cmp(&b.name));
@@ -576,6 +618,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         user.add_field(Field {
             custom_type: None,
@@ -609,6 +652,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         a.add_field(Field {
             custom_type: None,
@@ -632,6 +676,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         b.add_field(Field {
             custom_type: None,
@@ -681,6 +726,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         m.add_field(Field {
             custom_type: None,

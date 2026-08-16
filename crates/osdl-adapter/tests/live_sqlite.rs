@@ -27,6 +27,7 @@ async fn applies_create_and_add_field_to_live_sqlite() {
                 lock_field("age", "int", &["-null"]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }],
     };
 
@@ -93,6 +94,7 @@ async fn applies_reference_as_foreign_key() {
                 name: "User".into(),
                 fields: vec![lock_field("id", "uuid", &["-pk"])],
                 indexes: vec![],
+                primary_key: vec![],
             },
             LockModel {
                 name: "Post".into(),
@@ -101,6 +103,7 @@ async fn applies_reference_as_foreign_key() {
                     lock_field("author", "User.id", &[]),
                 ],
                 indexes: vec![],
+                primary_key: vec![],
             },
         ],
     };

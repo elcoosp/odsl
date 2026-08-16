@@ -114,9 +114,14 @@ fn render_roots(names: &[String], ast: &Ast) -> String {
             .find(|(_, m)| &m.name == name)
             .expect("model exists");
         let pk = model
-            .fields()
-            .find(|(_, f)| f.has(Intent::Pk))
-            .map(|(_, f)| f)
+            .pk_columns()
+            .first()
+            .and_then(|name| {
+                model
+                    .fields()
+                    .find(|(_, f)| &f.name == name)
+                    .map(|(_, f)| f)
+            })
             .expect("has pk");
         let pk_ty = gql_base_type(pk);
         let lname = name.to_lowercase();

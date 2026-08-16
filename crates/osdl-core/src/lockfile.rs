@@ -124,6 +124,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         user.add_field(Field {
             custom_type: None,
@@ -194,6 +195,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         user.add_field(Field {
             custom_type: None,
@@ -230,6 +232,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         user.add_field(Field {
             custom_type: None,
@@ -309,6 +312,7 @@ mod tests {
             field_index: vec![],
             line: 1,
             indexes: vec![],
+            primary_key: vec![],
         };
         user.add_field(Field {
             custom_type: None,
@@ -348,6 +352,7 @@ mod tests {
             field_index: vec![],
             line: 3,
             indexes: vec![],
+            primary_key: vec![],
         };
         post.add_field(Field {
             custom_type: None,

@@ -399,3 +399,57 @@ User
     assert_eq!(ast.model_doc("User"), Some("doc"));
     assert_eq!(ast.field_doc("User", "id"), Some("field doc"));
 }
+
+#[test]
+fn parses_composite_primary_key() {
+    // A model-level `-pk a,b` declares a composite key; individual fields must
+    // NOT also carry `-pk`.
+    let src =
+        "Membership\n  tenant_id uuid\n  user_id uuid\n  role string\n  -pk tenant_id,user_id\n";
+    let ast = parse(src).unwrap();
+    let m = find_model(&ast, "Membership");
+    assert_eq!(
+        m.primary_key,
+        vec!["tenant_id".to_string(), "user_id".to_string()]
+    );
+    // Neither field carries the per-field `-pk` intent (model-level wins).
+    assert!(!find_field(m, "tenant_id").has(Intent::Pk));
+    assert!(!find_field(m, "user_id").has(Intent::Pk));
+    // Derived key columns resolve correctly.
+    assert_eq!(
+        m.pk_columns(),
+        vec!["tenant_id".to_string(), "user_id".to_string()]
+    );
+}
+
+#[test]
+fn rejects_mixed_composite_and_field_pk() {
+    // Mixing `-pk a,b` with a per-field `-pk` is ambiguous and must fail.
+    let src = "Membership\n  tenant_id uuid -pk\n  user_id uuid\n  -pk tenant_id,user_id\n";
+    let ast = parse(src).unwrap();
+    let err =
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
+    assert!(matches!(
+        err,
+        OsdlError::Compile {
+            kind: CompileErrorKind::InvalidKey { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn rejects_composite_pk_missing_column() {
+    // A composite key referencing a non-existent column must fail.
+    let src = "Membership\n  tenant_id uuid\n  -pk tenant_id,ghost\n";
+    let ast = parse(src).unwrap();
+    let err =
+        osdl_core::Validator::validate(&ast, Some(osdl_core::Target::SeaOrmSqlite)).unwrap_err();
+    assert!(matches!(
+        err,
+        OsdlError::Compile {
+            kind: CompileErrorKind::InvalidKey { .. },
+            ..
+        }
+    ));
+}

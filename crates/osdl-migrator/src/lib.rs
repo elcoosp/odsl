@@ -300,6 +300,7 @@ mod tests {
                 lock_field("email", "string", &["-uniq"]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert_eq!(plan.ops.len(), 1);
@@ -320,6 +321,7 @@ mod tests {
                 lock_field("age", "int", &[]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let to = lf(vec![LockModel {
             name: "User".into(),
@@ -328,6 +330,7 @@ mod tests {
                 lock_field("age", "bigint", &["-null"]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert_eq!(
@@ -348,6 +351,7 @@ mod tests {
             name: "Old".into(),
             fields: vec![],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let to = lf(vec![]);
         let plan = MigrationPlan::diff(&from, &to);
@@ -369,6 +373,7 @@ mod tests {
                 lock_field("nick", "string", &[]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let to = lf(vec![LockModel {
             name: "User".into(),
@@ -377,6 +382,7 @@ mod tests {
                 lock_field("age", "bigint", &["-null"]),
             ],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         // drop field nick + alter field age are destructive; add field is not.
@@ -402,6 +408,7 @@ mod tests {
             name: "User".into(),
             fields: vec![lock_field("id", "uuid", &["-pk"])],
             indexes: vec![],
+            primary_key: vec![],
         }]);
         let plan = MigrationPlan::diff(&from, &to);
         assert!(!plan.is_destructive());

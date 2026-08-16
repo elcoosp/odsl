@@ -100,7 +100,7 @@ fn render_mermaid(models: &[LockModel]) -> String {
                 continue;
             }
             let mut tags: Vec<&str> = Vec::new();
-            if has_intent(&f.intents, "-pk") {
+            if model.primary_key.contains(&f.name) {
                 tags.push("PK");
             }
             if is_ref(&f.ty) {
@@ -172,7 +172,7 @@ fn render_dbml(models: &[LockModel]) -> String {
             } else {
                 " [not null]"
             };
-            let pk = if has_intent(&f.intents, "-pk") {
+            let pk = if model.primary_key.contains(&f.name) {
                 " [primary key]"
             } else {
                 ""
@@ -204,6 +204,11 @@ fn render_dbml(models: &[LockModel]) -> String {
             } else {
                 out.push_str(&format!("  indexes {{\n    {}\n  }}\n", cols));
             }
+        }
+        // Primary key (composite when model.primary_key has >1 column).
+        if !model.primary_key.is_empty() {
+            let cols = model.primary_key.join(", ");
+            out.push_str(&format!("  primary key ({cols})\n"));
         }
         out.push_str("}\n\n");
     }
@@ -277,6 +282,27 @@ Post
         // Two outgoing refs from the junction -> many-to-many.
         assert!(mermaid.contains("User ||--o{ User_Group :"));
         assert!(mermaid.contains("Group ||--o{ User_Group :"));
+    }
+
+    #[test]
+    fn composite_pk_marks_both_columns_and_dbml() {
+        let src = "Membership
+  tenant_id uuid
+  user_id uuid
+  role string
+  -pk tenant_id,user_id
+";
+        let ast = parse(src).expect("parse");
+        // Mermaid: both key columns tagged PK.
+        let (_, mermaid) = render(&ast, ErdFormat::Mermaid).unwrap();
+        assert!(mermaid.contains("tenant_id PK"));
+        assert!(mermaid.contains("user_id PK"));
+        // DBML: a composite primary key declaration.
+        let (_, dbml) = render(&ast, ErdFormat::Dbml).unwrap();
+        assert!(
+            dbml.contains("primary key (tenant_id, user_id)"),
+            "got:\n{dbml}"
+        );
     }
 
     #[test]
