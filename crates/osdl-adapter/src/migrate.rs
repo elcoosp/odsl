@@ -872,6 +872,8 @@ mod tests {
                             polymorphic_targets: vec![],
                             on_delete: Some("setnull".into()),
                             on_update: Some("restrict".into()),
+                            numeric_precision: None,
+                            numeric_scale: None,
                         },
                     ],
                     indexes: vec![],

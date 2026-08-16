@@ -86,6 +86,8 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         polymorphic_targets: vec![],
         on_delete: None,
         on_update: None,
+        numeric_precision: None,
+        numeric_scale: None,
     }
 }
 
@@ -102,6 +104,8 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         polymorphic_targets: vec![],
         on_delete: None,
         on_update: None,
+        numeric_precision: None,
+        numeric_scale: None,
     }
 }
 
@@ -133,6 +137,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 1,
         });
         user.add_field(Field {
@@ -147,6 +153,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 2,
         });
         ast.add_model(user);
@@ -199,6 +207,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 2,
         });
         ast.add_model(user);
@@ -233,6 +243,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 2,
         });
         user.add_field(Field {
@@ -247,6 +259,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 3,
         });
         user.add_field(Field {
@@ -261,6 +275,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 4,
         });
         user.indexes.push(ModelIndex {
@@ -306,6 +322,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 1,
         });
         user.add_field(Field {
@@ -320,6 +338,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 2,
         });
         let mut post = Model {
@@ -341,6 +361,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 4,
         });
         ast.add_model(user);

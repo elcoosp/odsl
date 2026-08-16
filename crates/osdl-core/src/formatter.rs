@@ -114,6 +114,14 @@ fn render_fields(m: &Model, ast: &Ast) -> String {
             out.push_str(reason);
             out.push('"');
         }
+        if let Some(p) = f.numeric_precision {
+            out.push_str(&format!(" -precision {p}"));
+            if let Some(s) = f.numeric_scale {
+                out.push_str(&format!(",{s}"));
+            }
+        } else if let Some(s) = f.numeric_scale {
+            out.push_str(&format!(" -scale {s}"));
+        }
         out.push('\n');
     }
     out
@@ -204,6 +212,8 @@ mod tests {
                     polymorphic_targets: vec![],
                     on_delete: None,
                     on_update: None,
+                    numeric_precision: None,
+                    numeric_scale: None,
                     line: 1,
                 });
             }
@@ -265,6 +275,8 @@ mod tests {
                 polymorphic_targets: vec!["Post".into(), "Video".into()],
                 on_delete: None,
                 on_update: None,
+                numeric_precision: None,
+                numeric_scale: None,
                 line: 1,
             });
             let f = m.field_by_name("age").unwrap();

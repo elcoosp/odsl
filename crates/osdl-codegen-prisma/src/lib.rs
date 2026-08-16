@@ -350,6 +350,8 @@ fn parse_field(
         custom_type: None,
         on_delete: None,
         on_update: None,
+        numeric_precision: None,
+        numeric_scale: None,
         line: 0,
     })
 }

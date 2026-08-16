@@ -36,6 +36,36 @@ fn parses_simple_model() {
 }
 
 #[test]
+fn parses_numeric_precision_and_scale() {
+    let src = "Product\n  id uuid -pk\n  price numeric -precision 18,4\n  qty numeric -precision 10\n  msrp numeric -scale 2\n";
+    let ast = parse(src).unwrap();
+    let product = find_model(&ast, "Product");
+    let price = find_field(product, "price");
+    assert_eq!(price.ty, FieldType::Scalar(ScalarType::Decimal));
+    assert_eq!(price.numeric_precision, Some(18));
+    assert_eq!(price.numeric_scale, Some(4));
+    let qty = find_field(product, "qty");
+    assert_eq!(qty.numeric_precision, Some(10));
+    assert_eq!(qty.numeric_scale, None);
+    let msrp = find_field(product, "msrp");
+    assert_eq!(msrp.numeric_precision, None);
+    assert_eq!(msrp.numeric_scale, Some(2));
+}
+
+#[test]
+fn formulates_precision_roundtrip() {
+    // `-precision p,s` must survive a format -> parse round-trip.
+    use osdl_core::formatter::format_ast;
+    let src = "Product\n  id uuid -pk\n  price numeric -precision 18,4\n";
+    let ast = parse(src).unwrap();
+    let formatted = format_ast(&ast);
+    let reparsed = parse(&formatted).unwrap();
+    let price = find_field(find_model(&reparsed, "Product"), "price");
+    assert_eq!(price.numeric_precision, Some(18));
+    assert_eq!(price.numeric_scale, Some(4));
+}
+
+#[test]
 fn infers_foreign_key_and_datetime() {
     let src = "User\n  id uuid -pk\nPost\n  id uuid -pk\n  user_id\n  posted_at\n";
     let ast = parse(src).unwrap();

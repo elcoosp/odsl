@@ -415,6 +415,12 @@ fn add_field_from_tokens(
     let mut on_delete: Option<FkAction> = None;
     let mut on_update: Option<FkAction> = None;
     let mut deprecated: Option<String> = None;
+    // Numeric precision/scale, set by `-precision N` / `-scale N` (or
+    // `-precision p,s`). `None` means "unset" -> documented per-dialect default.
+    let mut numeric_precision: Option<u16> = None;
+    let mut numeric_scale: Option<u16> = None;
+    let mut capturing_precision = false;
+    let mut capturing_scale = false;
     // If the field's type is a custom type, record its name and inherit its
     // base scalar + constraints.
     let mut custom_type: Option<String> = None;
@@ -470,6 +476,16 @@ fn add_field_from_tokens(
                     // The reason follows as a separate quoted/word token
                     // (e.g. `-deprecated "use contactEmail instead"`).
                     capturing_deprecated = true;
+                    continue;
+                }
+                if f == "-precision" {
+                    // The value follows as a separate word token: `18` or `18,4`.
+                    capturing_precision = true;
+                    continue;
+                }
+                if f == "-scale" {
+                    // The value follows as a separate word token: `4`.
+                    capturing_scale = true;
                     continue;
                 }
                 let intent = parse_intent(f).ok_or_else(|| {
@@ -557,6 +573,39 @@ fn add_field_from_tokens(
                     m2m_target = Some(w.trim().to_string());
                     continue;
                 }
+                if capturing_precision {
+                    capturing_precision = false;
+                    // Accept `18` or `18,4` (the latter also sets scale).
+                    let (p, s) = w
+                        .split_once(',')
+                        .map(|(p, s)| (p.trim(), Some(s.trim())))
+                        .unwrap_or((w.trim(), None));
+                    numeric_precision = Some(p.parse::<u16>().map_err(|_| {
+                        OsdlError::Parse(
+                            ParseError::new(format!("invalid -precision value `{w}`"))
+                                .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                        )
+                    })?);
+                    if let Some(s) = s {
+                        numeric_scale = Some(s.parse::<u16>().map_err(|_| {
+                            OsdlError::Parse(
+                                ParseError::new(format!("invalid -precision scale `{s}`"))
+                                    .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                            )
+                        })?);
+                    }
+                    continue;
+                }
+                if capturing_scale {
+                    capturing_scale = false;
+                    numeric_scale = Some(w.trim().parse::<u16>().map_err(|_| {
+                        OsdlError::Parse(
+                            ParseError::new(format!("invalid -scale value `{w}`"))
+                                .with_span(span_at(src, byte_start, byte_end, line_no), src),
+                        )
+                    })?);
+                    continue;
+                }
                 if let Some(ct) = env.custom_types.get(w) {
                     // This field is declared with a custom type: expand to its
                     // base scalar and inherit its intents/check. The field
@@ -638,6 +687,8 @@ fn add_field_from_tokens(
         custom_type,
         on_delete,
         on_update,
+        numeric_precision,
+        numeric_scale,
         line: line_no,
     });
     Ok((deprecated, None))

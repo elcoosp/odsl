@@ -397,8 +397,8 @@ fn map_type(raw: &str) -> &'static str {
         "integer" | "int" | "int4" | "smallint" | "int2" | "mediumint" | "tinyint" => "int",
         "bigint" | "int8" => "bigint",
         "bigserial" | "serial" | "autoincrement" => "bigint",
-        "real" | "float" | "float4" | "float8" | "double" | "double precision" | "numeric"
-        | "decimal" | "money" => "float",
+        "real" | "float" | "float4" | "float8" | "double" | "double precision" => "float",
+        "numeric" | "decimal" | "money" => "numeric",
         "boolean" | "bool" => "bool",
         "timestamp" | "timestamptz" | "datetime" => "datetime",
         "date" => "date",
@@ -409,6 +409,22 @@ fn map_type(raw: &str) -> &'static str {
         }
         _ => "string",
     }
+}
+
+/// Extract `(precision[, scale])` from a SQL type string such as
+/// `numeric(18,4)` or `decimal(12)`. Returns `None` when there is no
+/// precision clause (e.g. plain `numeric`, `int`).
+fn parse_numeric_precision(data_type: &str) -> Option<(u16, Option<u16>)> {
+    let open = data_type.find('(')?;
+    let close = data_type.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let inner = &data_type[open + 1..close];
+    let mut parts = inner.split(',');
+    let p: u16 = parts.next()?.trim().parse().ok()?;
+    let s = parts.next().and_then(|s| s.trim().parse::<u16>().ok());
+    Some((p, s))
 }
 
 /// Render the collected catalog into OSDL source text.
@@ -433,6 +449,12 @@ fn render_osdl(tables: &[String], columns: &[ColumnInfo], indexes: &[IndexInfo])
 
         for c in &cols {
             let mut parts = vec![map_type(&c.data_type).to_string()];
+            // Preserve timezone-awareness on round-trip: a tz-aware source column
+            // (Postgres `timestamptz` / `timestamp with time zone`) must come back
+            // as `datetime -tz`, otherwise `pull` silently drops the tz semantics.
+            // SQLite has no tz-aware type (datetime is TEXT), so it stays plain.
+            let raw = c.data_type.to_ascii_lowercase();
+            let tz_aware = raw.contains("timestamptz") || raw.contains("with time zone");
             if c.is_pk {
                 parts.push("-pk".into());
             }
@@ -441,6 +463,19 @@ fn render_osdl(tables: &[String], columns: &[ColumnInfo], indexes: &[IndexInfo])
             }
             if !c.not_null && !c.is_pk {
                 parts.push("-null".into());
+            }
+            if tz_aware && map_type(&c.data_type) == "datetime" {
+                parts.push("-tz".into());
+            }
+            // Preserve numeric precision/scale on round-trip: e.g. Postgres
+            // `numeric(18,4)` or MySQL `decimal(12,2)` must come back as
+            // `numeric -precision 18,4` so the exact type is reproduced.
+            if let Some((p, s)) = parse_numeric_precision(&c.data_type) {
+                if let Some(s) = s {
+                    parts.push(format!("-precision {p},{s}"));
+                } else {
+                    parts.push(format!("-precision {p}"));
+                }
             }
             if let Some(d) = &c.default {
                 // Only surface simple literal defaults (0, '', now, etc.).
@@ -545,6 +580,61 @@ mod tests {
         assert_eq!(map_type("timestamptz"), "datetime");
         assert_eq!(map_type("jsonb"), "json");
         assert_eq!(map_type("bytea"), "binary");
+    }
+
+    #[test]
+    fn type_mapping_preserves_numeric_precision() {
+        // numeric / decimal / money must map to `numeric`, NOT `float` —
+        // collapsing them to float loses precision on round-trip.
+        assert_eq!(map_type("numeric"), "numeric");
+        assert_eq!(map_type("decimal"), "numeric");
+        assert_eq!(map_type("numeric(18,4)"), "numeric");
+        assert_eq!(map_type("money"), "numeric");
+        // floats stay floats
+        assert_eq!(map_type("double precision"), "float");
+        assert_eq!(map_type("real"), "float");
+    }
+
+    #[test]
+    fn render_osdl_preserves_tz_on_timestamptz() {
+        let tables = vec!["users".to_string()];
+        let columns = vec![ColumnInfo {
+            table: "users".to_string(),
+            name: "created_at".to_string(),
+            data_type: "timestamptz".to_string(),
+            not_null: true,
+            is_pk: false,
+            is_unique: false,
+            default: None,
+        }];
+        let out = render_osdl(&tables, &columns, &[]);
+        assert!(
+            out.contains("created_at datetime -tz"),
+            "timestamptz should round-trip as `datetime -tz`, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_osdl_no_tz_for_plain_timestamp() {
+        let tables = vec!["users".to_string()];
+        let columns = vec![ColumnInfo {
+            table: "users".to_string(),
+            name: "created_at".to_string(),
+            data_type: "timestamp".to_string(),
+            not_null: true,
+            is_pk: false,
+            is_unique: false,
+            default: None,
+        }];
+        let out = render_osdl(&tables, &columns, &[]);
+        assert!(
+            out.contains("created_at datetime"),
+            "plain timestamp should round-trip as `datetime`, got:\n{out}"
+        );
+        assert!(
+            !out.contains("-tz"),
+            "plain timestamp must NOT get a -tz flag, got:\n{out}"
+        );
     }
 
     #[test]

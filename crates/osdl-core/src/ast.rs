@@ -309,6 +309,10 @@ pub struct Field {
     pub on_delete: Option<FkAction>,
     /// Referential action on update of the referenced key (`-onupdate`).
     pub on_update: Option<FkAction>,
+    /// Numeric precision (total digits), set by `-precision N` on `numeric`.
+    pub numeric_precision: Option<u16>,
+    /// Numeric scale (fractional digits), set by `-scale N` on `numeric`.
+    pub numeric_scale: Option<u16>,
     pub line: usize,
 }
 
@@ -369,6 +373,10 @@ pub struct LockField {
     /// Referential action on update of the referenced key (`-onupdate`);
     /// `None` when unspecified.
     pub on_update: Option<String>,
+    /// Numeric precision (total digits) for `numeric(p,s)` columns.
+    pub numeric_precision: Option<u16>,
+    /// Numeric scale (fractional digits) for `numeric(p,s)` columns.
+    pub numeric_scale: Option<u16>,
 }
 
 impl LockModel {
@@ -417,6 +425,8 @@ impl Ast {
                             polymorphic_targets: f.polymorphic_targets.clone(),
                             on_delete: f.on_delete.map(|a| a.as_keyword().to_string()),
                             on_update: f.on_update.map(|a| a.as_keyword().to_string()),
+                            numeric_precision: f.numeric_precision,
+                            numeric_scale: f.numeric_scale,
                         }
                     })
                     .collect();
@@ -488,6 +498,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 polymorphic_targets: vec![],
                 on_delete: None,
                 on_update: None,
+                numeric_precision: None,
+                numeric_scale: None,
             },
             LockField {
                 name: format!("{source_l}_id"),
@@ -500,6 +512,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 polymorphic_targets: vec![],
                 on_delete: None,
                 on_update: None,
+                numeric_precision: None,
+                numeric_scale: None,
             },
             LockField {
                 name: format!("{target_l}_id"),
@@ -512,6 +526,8 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 polymorphic_targets: vec![],
                 on_delete: None,
                 on_update: None,
+                numeric_precision: None,
+                numeric_scale: None,
             },
         ];
         fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -573,6 +589,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -604,6 +622,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 1,
         });
         let mut b = Model {
@@ -625,6 +645,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 1,
         });
         b.add_field(Field {
@@ -639,6 +661,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 2,
         });
         ast.add_model(a);
@@ -670,6 +694,8 @@ mod tests {
             polymorphic_targets: vec![],
             on_delete: None,
             on_update: None,
+            numeric_precision: None,
+            numeric_scale: None,
             line: 1,
         });
         let mut line = 2;
@@ -686,6 +712,8 @@ mod tests {
                 polymorphic_targets: vec![],
                 on_delete: None,
                 on_update: None,
+                numeric_precision: None,
+                numeric_scale: None,
                 line,
             });
             line += 1;

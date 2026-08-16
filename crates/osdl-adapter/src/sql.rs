@@ -43,8 +43,27 @@ impl SqlDialect {
 }
 
 /// Map an OSDL scalar keyword to a column type for the dialect.
-pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
-    match (dialect, keyword) {
+/// Map an OSDL type keyword to the SQL column type for `dialect`.
+///
+/// For `numeric`, an explicit `(precision, scale)` is honoured when provided;
+/// otherwise a documented default is used (SQLite/Postgres `NUMERIC`, MySQL
+/// `DECIMAL(38,10)`). The default was previously hard-coded per-dialect and
+/// arbitrary — exposing it via `-precision`/`-scale` makes it explicit and
+/// round-trippable.
+pub fn column_type(
+    dialect: SqlDialect,
+    keyword: &str,
+    precision: Option<u16>,
+    scale: Option<u16>,
+) -> String {
+    // Resolve numeric precision/scale with documented per-dialect defaults.
+    let numeric = match (dialect, precision, scale) {
+        (_, Some(p), Some(s)) => format!("({p},{s})"),
+        (_, Some(p), None) => format!("({p})"),
+        (SqlDialect::Mysql, None, None) => "(38,10)".to_string(),
+        _ => String::new(),
+    };
+    let base = match (dialect, keyword) {
         (SqlDialect::Sqlite, "string") => "TEXT",
         (SqlDialect::Sqlite, "int") => "INTEGER",
         (SqlDialect::Sqlite, "bigint") => "BIGINT",
@@ -55,7 +74,7 @@ pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
         (SqlDialect::Sqlite, "uuid") => "TEXT",
         (SqlDialect::Sqlite, "json") => "TEXT",
         (SqlDialect::Sqlite, "binary") => "BLOB",
-        (SqlDialect::Sqlite, "numeric") => "NUMERIC",
+        (SqlDialect::Sqlite, "numeric") => &format!("NUMERIC{numeric}"),
         (SqlDialect::Postgres, "string") => "TEXT",
         (SqlDialect::Postgres, "int") => "INTEGER",
         (SqlDialect::Postgres, "bigint") => "BIGINT",
@@ -66,7 +85,7 @@ pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
         (SqlDialect::Postgres, "uuid") => "UUID",
         (SqlDialect::Postgres, "json") => "JSONB",
         (SqlDialect::Postgres, "binary") => "BYTEA",
-        (SqlDialect::Postgres, "numeric") => "NUMERIC",
+        (SqlDialect::Postgres, "numeric") => &format!("NUMERIC{numeric}"),
         (SqlDialect::Mysql, "string") => "TEXT",
         (SqlDialect::Mysql, "int") => "INT",
         (SqlDialect::Mysql, "bigint") => "BIGINT",
@@ -77,10 +96,11 @@ pub fn column_type(dialect: SqlDialect, keyword: &str) -> &'static str {
         (SqlDialect::Mysql, "uuid") => "CHAR(36)",
         (SqlDialect::Mysql, "json") => "JSON",
         (SqlDialect::Mysql, "binary") => "BLOB",
-        (SqlDialect::Mysql, "numeric") => "DECIMAL(38,10)",
+        (SqlDialect::Mysql, "numeric") => &format!("DECIMAL{numeric}"),
         // Unknown keyword -> safest portable type.
         (_, _) => "TEXT",
-    }
+    };
+    base.to_string()
 }
 
 /// An OSDL field's stored `ty` may be a reference (`Model.field`).
@@ -110,12 +130,18 @@ fn column_def(dialect: SqlDialect, field: &osdl_core::ast::LockField, lf: &Lockf
         let pk_kw = referenced_pk_keyword(lf, ref_model);
         format!(
             "{} REFERENCES {}({})",
-            column_type(dialect, pk_kw),
+            column_type(dialect, pk_kw, None, None),
             quote_ident_for(dialect, &table_name(ref_model)),
             quote_ident_for(dialect, ref_field)
         )
     } else {
-        column_type(dialect, &field.ty).to_string()
+        column_type(
+            dialect,
+            &field.ty,
+            field.numeric_precision,
+            field.numeric_scale,
+        )
+        .to_string()
     };
 
     let mut def = format!("{name} {base_ty}");
@@ -241,6 +267,8 @@ pub fn op_to_sql(
                         polymorphic_targets: vec![],
                         on_delete: None,
                         on_update: None,
+                        numeric_precision: None,
+                        numeric_scale: None,
                     });
                 }
                 return sqlite_rebuild_sql(old, model, &fields, target);
@@ -248,9 +276,14 @@ pub fn op_to_sql(
             // Non-rebuild path (Postgres/MySQL, or a nullable non-FK,
             // non-unique column on SQLite).
             let col_ty = if is_fk {
-                column_type(dialect, referenced_pk_keyword(target, &split_ref(ty).0))
+                column_type(
+                    dialect,
+                    referenced_pk_keyword(target, &split_ref(ty).0),
+                    None,
+                    None,
+                )
             } else {
-                column_type(dialect, ty)
+                column_type(dialect, ty, None, None)
             };
             let mut def = format!(
                 "ALTER TABLE {} ADD COLUMN {} {}",
@@ -300,9 +333,14 @@ pub fn op_to_sql(
                 SqlDialect::Postgres | SqlDialect::Mysql => {
                     let is_fk = as_reference(new_ty).is_some();
                     let col_ty = if is_fk {
-                        column_type(dialect, referenced_pk_keyword(target, &split_ref(new_ty).0))
+                        column_type(
+                            dialect,
+                            referenced_pk_keyword(target, &split_ref(new_ty).0),
+                            None,
+                            None,
+                        )
                     } else {
-                        column_type(dialect, new_ty)
+                        column_type(dialect, new_ty, None, None)
                     };
                     let mut stmts = vec![format!(
                         "ALTER TABLE {} ALTER COLUMN {} TYPE {}",
@@ -498,6 +536,43 @@ mod tests {
     use osdl_core::ast::LockModel;
     use osdl_core::lockfile::Lockfile;
     use osdl_core::lockfile::lock_field;
+
+    #[test]
+    fn column_type_numeric_precision_is_explicit() {
+        // Without precision, MySQL falls back to the documented DECIMAL(38,10)
+        // and PG/SQLite use bare NUMERIC.
+        assert_eq!(
+            column_type(SqlDialect::Mysql, "numeric", None, None),
+            "DECIMAL(38,10)"
+        );
+        assert_eq!(
+            column_type(SqlDialect::Postgres, "numeric", None, None),
+            "NUMERIC"
+        );
+        assert_eq!(
+            column_type(SqlDialect::Sqlite, "numeric", None, None),
+            "NUMERIC"
+        );
+        // Explicit precision/scale is honoured across dialects.
+        assert_eq!(
+            column_type(SqlDialect::Mysql, "numeric", Some(18), Some(4)),
+            "DECIMAL(18,4)"
+        );
+        assert_eq!(
+            column_type(SqlDialect::Postgres, "numeric", Some(18), Some(4)),
+            "NUMERIC(18,4)"
+        );
+        // Precision only (no scale) is allowed.
+        assert_eq!(
+            column_type(SqlDialect::Mysql, "numeric", Some(10), None),
+            "DECIMAL(10)"
+        );
+        // Non-numeric types ignore precision.
+        assert_eq!(
+            column_type(SqlDialect::Postgres, "int", Some(18), Some(4)),
+            "INTEGER"
+        );
+    }
 
     /// An empty lockfile (used for FK-resolution fallbacks in non-FK tests).
     fn empty_lf() -> Lockfile {
