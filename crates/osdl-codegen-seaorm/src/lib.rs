@@ -231,17 +231,28 @@ fn render_field(
         };
     }
 
-    // A `-relation Other` (has_many) field has no physical column: only emit the
-    // relation field.
-    if field.has(Intent::Relation)
+    // A `-relation Other` (has_many) or `-hasone Other` (has_one) field has no
+    // physical column: only emit the relation accessor. `-hasone` produces a
+    // `HasOne` accessor (1:1); `-relation` produces `HasMany` (1:N).
+    if (field.has(Intent::Relation) || field.has(Intent::HasOne))
         && let Some(target) = relation_target_entity(field)
     {
         let te = syn::Ident::new(&target.to_ascii_lowercase(), proc_macro2::Span::call_site());
+        let rel_kind = if field.has(Intent::HasOne) {
+            "has_one"
+        } else {
+            "has_many"
+        };
+        let rel_ty = if field.has(Intent::HasOne) {
+            quote! { HasOne<super::#te::Entity> }
+        } else {
+            quote! { HasMany<super::#te::Entity> }
+        };
         return quote! {
             #field_doc
             #deprecated_doc
-            #[sea_orm(has_many)]
-            pub #name: HasMany<super::#te::Entity>,
+            #[sea_orm(#rel_kind)]
+            pub #name: #rel_ty,
         };
     }
 
@@ -392,6 +403,12 @@ fn default_attr(field: &Field) -> TokenStream {
 /// key type) when the field carries no explicit scalar type.
 /// Extract the target model name from a `-relation Model` field.
 fn relation_target_entity(field: &Field) -> Option<String> {
+    // `-hasone Model` / `-relation Model` store the target as a `Ref(Model)`
+    // (or `relation:Model`). Resolve it directly rather than via
+    // `field_reference`, which excludes relation/hasone accessors.
+    if let FieldType::Ref(r) = &field.ty {
+        return Some(r.model.clone());
+    }
     if let FieldType::InferredRef(s) = &field.ty
         && let Some(stripped) = s.strip_prefix("relation:")
     {
@@ -808,5 +825,28 @@ User
         assert!(post_rs.contains("impl sea_orm::entity::Index"));
         assert!(post_rs.contains("fn index_type(&self) -> Option<&str>"));
         assert!(post_rs.contains("\"gin\""));
+    }
+
+    #[test]
+    fn hasone_renders_has_one_relation() {
+        let ast = compile(
+            "User
+  id uuid -pk
+  profile Profile -hasone
+Profile
+  id uuid -pk
+",
+        );
+        let renderer = SeaOrmRenderer::new(Target::SeaOrmSqlite);
+        let files = renderer.render(&ast).unwrap();
+        let user_rs = files
+            .iter()
+            .find(|(p, _)| p == "entity/user.rs")
+            .unwrap()
+            .1
+            .clone();
+        // 1:1 -> a `has_one` relation accessor (not `has_many`).
+        assert!(user_rs.contains("#[sea_orm(\"has_one\")]"));
+        assert!(user_rs.contains("HasOne<super::profile::Entity>"));
     }
 }

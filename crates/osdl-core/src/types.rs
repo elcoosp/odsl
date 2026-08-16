@@ -156,6 +156,10 @@ pub enum Intent {
     Auto,
     /// Relationship to another model (1:N / N:1 helper).
     Relation,
+    /// One-to-one relationship to another model (`-hasone Model`). Rendered like
+    /// a `Relation` foreign key but with a uniqueness constraint so at most one
+    /// owning row references each target row (1:1 cardinality).
+    HasOne,
     /// Closed set of string values (native enum).
     Enum,
     /// A database-side default value (`-default <value>`).
@@ -196,6 +200,7 @@ impl Intent {
             Intent::Tz => "-tz",
             Intent::Auto => "-auto",
             Intent::Relation => "-relation",
+            Intent::HasOne => "-hasone",
             Intent::Enum => "-enum",
             Intent::Default => "-default",
             Intent::M2m => "-m2m",

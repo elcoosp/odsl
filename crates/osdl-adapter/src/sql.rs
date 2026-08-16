@@ -291,6 +291,7 @@ pub fn op_to_sql(
                         on_update: None,
                         numeric_precision: None,
                         numeric_scale: None,
+                        through_model: None,
                     });
                 }
                 return sqlite_rebuild_sql(old, model, &fields, target);

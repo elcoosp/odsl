@@ -100,6 +100,10 @@ fn render_fields(m: &Model, ast: &Ast) -> String {
             out.push_str(" -m2m ");
             out.push_str(t);
         }
+        if let Some(join) = &f.through_model {
+            out.push_str(" -through ");
+            out.push_str(join);
+        }
         if let Some(expr) = &f.check_expr {
             out.push_str(" -check \"");
             out.push_str(expr);
@@ -131,8 +135,15 @@ fn render_type(f: &Field) -> String {
     match &f.ty {
         FieldType::Scalar(s) => s.as_keyword().to_string(),
         FieldType::Ref(r) => format!("{}.{}", r.model, r.field),
+        // A `-hasone`/`-relation` field stores the target as `relation:Model`.
+        // When the field carries `HasOne`, render the bare model name as the
+        // type (so the output is `field Model -hasone`, not `relation:Model`).
         FieldType::InferredRef(s) if s.starts_with("relation:") => {
-            format!("relation:{}", &s["relation:".len()..])
+            if f.has(crate::types::Intent::HasOne) {
+                s["relation:".len()..].to_string()
+            } else {
+                format!("relation:{}", &s["relation:".len()..])
+            }
         }
         FieldType::InferredRef(s) => s.clone(),
     }
@@ -151,6 +162,7 @@ fn render_intents(f: &Field) -> Vec<String> {
         Intent::Tz,
         Intent::Index,
         Intent::Relation,
+        Intent::HasOne,
         Intent::Virtual,
         Intent::SoftDelete,
         Intent::Partition,
@@ -215,6 +227,7 @@ mod tests {
                     on_update: None,
                     numeric_precision: None,
                     numeric_scale: None,
+                    through_model: None,
                     line: 1,
                 });
             }
@@ -278,6 +291,7 @@ mod tests {
                 on_update: None,
                 numeric_precision: None,
                 numeric_scale: None,
+                through_model: None,
                 line: 1,
             });
             let f = m.field_by_name("age").unwrap();

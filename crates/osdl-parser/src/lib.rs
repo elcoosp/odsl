@@ -515,6 +515,8 @@ fn add_field_from_tokens(
     let mut numeric_scale: Option<u16> = None;
     let mut capturing_precision = false;
     let mut capturing_scale = false;
+    let mut through_model: Option<String> = None;
+    let mut capturing_through = false;
     // If the field's type is a custom type, record its name and inherit its
     // base scalar + constraints.
     let mut custom_type: Option<String> = None;
@@ -538,6 +540,20 @@ fn add_field_from_tokens(
                     // The target model follows as a separate word/reference token.
                     intents.push(Intent::M2m);
                     capturing_m2m = true;
+                    continue;
+                }
+                if f == "-hasone" {
+                    // One-to-one: `posts -hasone Post`. The target model is the
+                    // field's type (already captured as a `relation:` ref or a
+                    // `Ref`), so `-hasone` only tags the field with `HasOne`
+                    // intent for 1:1 cardinality.
+                    intents.push(Intent::HasOne);
+                    continue;
+                }
+                if f == "-through" {
+                    // Explicit join model for a relation/m2m: `... -through Join`.
+                    // The join model name follows as a separate word/reference token.
+                    capturing_through = true;
                     continue;
                 }
                 if f == "-check" {
@@ -594,6 +610,11 @@ fn add_field_from_tokens(
                 model: rm,
                 field: rf,
             } => {
+                if capturing_through {
+                    capturing_through = false;
+                    through_model = Some(rm.clone());
+                    continue;
+                }
                 if capturing_m2m {
                     capturing_m2m = false;
                     m2m_target = Some(rm.clone());
@@ -605,6 +626,11 @@ fn add_field_from_tokens(
                 }));
             }
             RawToken::Word(w) => {
+                if capturing_through {
+                    capturing_through = false;
+                    through_model = Some(w.trim().to_string());
+                    continue;
+                }
                 if capturing_enum {
                     capturing_enum = false;
                     enum_variants = w.split(',').map(|s| s.trim().to_string()).collect();
@@ -783,6 +809,7 @@ fn add_field_from_tokens(
         on_update,
         numeric_precision,
         numeric_scale,
+        through_model,
         line: line_no,
     });
     Ok((deprecated, None))

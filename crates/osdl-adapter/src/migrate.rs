@@ -901,6 +901,7 @@ mod tests {
                             on_update: Some("restrict".into()),
                             numeric_precision: None,
                             numeric_scale: None,
+                            through_model: None,
                         },
                     ],
                     indexes: vec![],

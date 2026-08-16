@@ -361,6 +361,10 @@ pub struct Field {
     pub numeric_precision: Option<u16>,
     /// Numeric scale (fractional digits), set by `-scale N` on `numeric`.
     pub numeric_scale: Option<u16>,
+    /// Explicit join model for a `-through` relation (`posts -relation Post
+    /// -through PostAuthor`). When set, the auto-generated `<Source>_<Target>`
+    /// junction is suppressed and the named model is used as the join table.
+    pub through_model: Option<String>,
     pub line: usize,
 }
 
@@ -412,6 +416,8 @@ pub struct LockField {
     /// Target models for a polymorphic reference (`-polymorphic A,B`); empty
     /// when the field is not polymorphic.
     pub polymorphic_targets: Vec<String>,
+    /// Explicit join model for a `-through` relation; `None` when absent.
+    pub through_model: Option<String>,
     /// Referential action on deletion of the referenced row (`-ondelete`);
     /// `None` when unspecified.
     pub on_delete: Option<String>,
@@ -486,6 +492,7 @@ impl Ast {
                             on_update: f.on_update.map(|a| a.as_keyword().to_string()),
                             numeric_precision: f.numeric_precision,
                             numeric_scale: f.numeric_scale,
+                            through_model: f.through_model.clone(),
                         }
                     })
                     .collect();
@@ -540,7 +547,12 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 .find(|i| i.starts_with("-m2m "))
                 .map(|s| s["-m2m ".len()..].to_string());
             if let Some(target) = m2m {
-                junctions.push((m.name.clone(), target));
+                // An explicit `-through <Join>` join model means the user owns
+                // the junction table; suppress the auto-generated
+                // `<Source>_<Target>` and just drop the virtual accessor field.
+                if m.fields[i].through_model.is_none() {
+                    junctions.push((m.name.clone(), target));
+                }
                 m.fields.remove(i);
             } else {
                 i += 1;
@@ -565,6 +577,7 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 on_update: None,
                 numeric_precision: None,
                 numeric_scale: None,
+                through_model: None,
             },
             LockField {
                 name: format!("{source_l}_id"),
@@ -579,6 +592,7 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 on_update: None,
                 numeric_precision: None,
                 numeric_scale: None,
+                through_model: None,
             },
             LockField {
                 name: format!("{target_l}_id"),
@@ -593,6 +607,7 @@ fn expand_m2m_junctions(models: &mut Vec<LockModel>) {
                 on_update: None,
                 numeric_precision: None,
                 numeric_scale: None,
+                through_model: None,
             },
         ];
         fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -663,6 +678,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 1,
         });
         let idx = ast.add_model(user);
@@ -697,6 +713,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 1,
         });
         let mut b = Model {
@@ -721,6 +738,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 1,
         });
         b.add_field(Field {
@@ -737,6 +755,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 2,
         });
         ast.add_model(a);
@@ -771,6 +790,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 1,
         });
         let mut line = 2;
@@ -789,6 +809,7 @@ mod tests {
                 on_update: None,
                 numeric_precision: None,
                 numeric_scale: None,
+                through_model: None,
                 line,
             });
             line += 1;

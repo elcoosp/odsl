@@ -110,7 +110,7 @@ fn render_field_prisma(f: &Field, is_composite: bool) -> String {
             _ => {}
         }
     }
-    if f.has(Intent::Uniq) && !f.has(Intent::Pk) {
+    if (f.has(Intent::Uniq) || f.has(Intent::HasOne)) && !f.has(Intent::Pk) {
         attrs.push("@unique".into());
     }
 
@@ -376,6 +376,7 @@ fn parse_field(
         on_update: None,
         numeric_precision: None,
         numeric_scale: None,
+        through_model: None,
         line: 0,
     })
 }
@@ -611,6 +612,25 @@ mod tests {
         assert!(
             !p.contains("type: Btree"),
             "btree should not emit a type modifier, got:\n{p}"
+        );
+    }
+
+    #[test]
+    fn hasone_renders_unique_relation() {
+        let src = "User
+  id uuid -pk
+  profile Profile -hasone
+Profile
+  id uuid -pk
+";
+        let ast = osdl(src);
+        let p = render_prisma(&ast);
+        // 1:1 -> the FK carries @relation and @unique.
+        assert!(p.contains("profile Profile"), "got:\n{p}");
+        assert!(p.contains("@relation(fields: [profile]"), "got:\n{p}");
+        assert!(
+            p.contains("@unique"),
+            "expected @unique for hasone, got:\n{p}"
         );
     }
 

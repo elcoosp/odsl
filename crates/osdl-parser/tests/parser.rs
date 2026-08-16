@@ -3,6 +3,7 @@
 
 use osdl_core::ast::Ast;
 use osdl_core::errors::{CompileErrorKind, OsdlError};
+use osdl_core::lockfile::Lockfile;
 use osdl_core::types::{FieldType, FkAction, Intent, ScalarType};
 use osdl_parser::infer;
 use osdl_parser::parse;
@@ -489,4 +490,52 @@ fn parses_index_options() {
         .expect("unique index present");
     assert_eq!(uniq.index_type.as_deref(), Some("btree"));
     assert_eq!(uniq.fields, vec!["tenant_id".to_string(), "id".to_string()]);
+}
+
+#[test]
+fn parses_hasone_one_to_one() {
+    let src = "User
+  id uuid -pk
+  profile Profile -hasone
+Profile
+  id uuid -pk
+";
+    let ast = parse(src).unwrap();
+    let user = find_model(&ast, "User");
+    let f = user
+        .fields()
+        .find(|(_, fl)| fl.name == "profile")
+        .map(|(_, fl)| fl)
+        .expect("profile field");
+    assert!(f.has(Intent::HasOne));
+    // The target resolves to the Profile model (a Ref here because Profile is a
+    // known model), which relation_target()/renderers use for 1:1 wiring.
+    assert!(matches!(f.ty, FieldType::Ref(ref r) if r.model == "Profile"));
+}
+
+#[test]
+fn parses_through_uses_explicit_join() {
+    let src = "Author
+  id uuid -pk
+  books Book -relation -through AuthorBook
+Book
+  id uuid -pk
+AuthorBook
+  id uuid -pk
+  author Author.id
+  book Book.id
+";
+    let ast = parse(src).unwrap();
+    let author = find_model(&ast, "Author");
+    let f = author
+        .fields()
+        .find(|(_, fl)| fl.name == "books")
+        .map(|(_, fl)| fl)
+        .expect("books field");
+    assert_eq!(f.through_model.as_deref(), Some("AuthorBook"));
+    // Lockfile expansion must NOT create an auto <Author>_<Book> junction
+    // because -through names the join model explicitly.
+    let lf = Lockfile::from_ast(&ast);
+    assert!(lf.models.iter().any(|m| m.name == "AuthorBook"));
+    assert!(!lf.models.iter().any(|m| m.name == "Author_Book"));
 }

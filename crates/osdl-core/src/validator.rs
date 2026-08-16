@@ -240,6 +240,30 @@ impl Validator {
                         }));
                     }
                 }
+                // `-hasone Model`: the target must exist.
+                if field.has(Intent::HasOne) {
+                    let Some(target) = relation_target(field) else {
+                        return Err(OsdlError::compile(CompileErrorKind::TypeMismatch {
+                            intent: "-hasone".into(),
+                            ty: "requires a target model".into(),
+                        }));
+                    };
+                    if ast.model_by_name(&target).is_none() {
+                        return Err(OsdlError::compile(CompileErrorKind::UnresolvedReference {
+                            from: format!("{}.{}", model.name, field.name),
+                            target,
+                        }));
+                    }
+                }
+                // `-through Join`: the join model must exist.
+                if let Some(join) = &field.through_model
+                    && ast.model_by_name(join).is_none()
+                {
+                    return Err(OsdlError::compile(CompileErrorKind::UnresolvedReference {
+                        from: format!("{}.{}", model.name, field.name),
+                        target: join.clone(),
+                    }));
+                }
             }
         }
         Ok(())
@@ -316,11 +340,16 @@ fn is_model_name(ast: &Ast, name: &str) -> bool {
 /// `-relation` carries the target model in its name, e.g. `posts -relation Post`.
 /// We encode the target as `relation:Post` in the type keyword, see parser.
 fn relation_target(field: &Field) -> Option<String> {
-    // The parser stores `-relation <Model>` as type keyword `relation:Model`.
+    // The parser stores `-relation <Model>` as type keyword `relation:Model`,
+    // and `-hasone <Model>` resolves the type to a `Ref(Model)` (or
+    // `relation:Model`). Accept both forms.
     if let FieldType::InferredRef(s) = &field.ty
         && let Some(stripped) = s.strip_prefix("relation:")
     {
         return Some(stripped.to_string());
+    }
+    if let FieldType::Ref(r) = &field.ty {
+        return Some(r.model.clone());
     }
     None
 }
@@ -355,8 +384,8 @@ fn dfs(
 fn is_intent_compatible(intent: Intent, ty: &FieldType) -> bool {
     use Intent::*;
     match intent {
-        Pk | Partition | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m
-        | Virtual | SoftDelete | Check | Polymorphic | OnDelete | OnUpdate => true,
+        Pk | Partition | Uniq | Null | Auto | Tz | Relation | HasOne | Index | Enum | Default
+        | M2m | Virtual | SoftDelete | Check | Polymorphic | OnDelete | OnUpdate => true,
         Fulltext => {
             // Full-text search only makes sense on textual types.
             matches!(ty, FieldType::Scalar(ScalarType::String))
@@ -373,15 +402,15 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
         // SQL backends support these intents natively.
         (
             SeaOrmSqlite,
-            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual
-            | SoftDelete | Check | Polymorphic,
+            Pk | Uniq | Null | Auto | Tz | Relation | HasOne | Index | Enum | Default | M2m
+            | Virtual | SoftDelete | Check | Polymorphic,
         ) => true,
         (SeaOrmSqlite, Fulltext) => true,   // SQLite FTS5
         (SeaOrmSqlite, Partition) => false, // SQLite has no partition concept
         (
             SeaOrmPostgres | SeaOrmMysql,
-            Pk | Uniq | Null | Auto | Tz | Relation | Index | Enum | Default | M2m | Virtual
-            | SoftDelete | Check | Polymorphic,
+            Pk | Uniq | Null | Auto | Tz | Relation | HasOne | Index | Enum | Default | M2m
+            | Virtual | SoftDelete | Check | Polymorphic,
         ) => true,
         (SeaOrmPostgres, Fulltext) => true,   // PG GIN
         (SeaOrmPostgres, Partition) => false, // partition requires table-level DDL, not a field flag here
@@ -390,8 +419,8 @@ fn target_supports(target: Target, intent: Intent, _ty: &FieldType) -> bool {
         // Mongo supports these natively.
         (
             Mongo,
-            Pk | Uniq | Null | Tz | Partition | Relation | Index | Enum | Default | M2m | Virtual
-            | SoftDelete | Check | Polymorphic,
+            Pk | Uniq | Null | Tz | Partition | Relation | HasOne | Index | Enum | Default | M2m
+            | Virtual | SoftDelete | Check | Polymorphic,
         ) => true,
         (Mongo, Auto) => false,    // Mongo has no auto-increment
         (Mongo, Fulltext) => true, // Mongo text index

@@ -424,6 +424,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line,
         }
     }

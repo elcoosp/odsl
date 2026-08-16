@@ -88,6 +88,7 @@ pub fn lock_field(name: &str, ty: &str, intents: &[&str]) -> LockField {
         on_update: None,
         numeric_precision: None,
         numeric_scale: None,
+        through_model: None,
     }
 }
 
@@ -106,6 +107,7 @@ pub fn lock_enum_field(name: &str, ty: &str, intents: &[&str], variants: &[&str]
         on_update: None,
         numeric_precision: None,
         numeric_scale: None,
+        through_model: None,
     }
 }
 
@@ -140,6 +142,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 1,
         });
         user.add_field(Field {
@@ -156,6 +159,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 2,
         });
         ast.add_model(user);
@@ -211,6 +215,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 2,
         });
         ast.add_model(user);
@@ -248,6 +253,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 2,
         });
         user.add_field(Field {
@@ -264,6 +270,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 3,
         });
         user.add_field(Field {
@@ -280,6 +287,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 4,
         });
         user.indexes.push(ModelIndex {
@@ -333,6 +341,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 1,
         });
         user.add_field(Field {
@@ -349,6 +358,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 2,
         });
         let mut post = Model {
@@ -373,6 +383,7 @@ mod tests {
             on_update: None,
             numeric_precision: None,
             numeric_scale: None,
+            through_model: None,
             line: 4,
         });
         ast.add_model(user);
