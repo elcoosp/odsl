@@ -3020,6 +3020,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "osdl-bench"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "osdl-codegen-mongo",
+ "osdl-codegen-seaorm",
+ "osdl-core",
+ "osdl-parser",
+]
+
+[[package]]
 name = "osdl-cli"
 version = "0.1.0"
 dependencies = [
