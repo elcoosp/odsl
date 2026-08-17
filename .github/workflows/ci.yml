@@ -5,61 +5,91 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Never auto-update insta snapshots in CI; a drift must fail the build so it
+  # is reviewed as a diff.
+  INSTA_UPDATE: "no"
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-test:
-    name: Build & test (Ubuntu)
+  fmt:
+    name: Format (cargo fmt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Lint (cargo clippy -D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy (all targets, no warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Build
-        run: cargo build --workspace --all-targets
-      - name: Test (no live DB)
-        # Live Postgres/Mongo integration tests need Docker; they are skipped
-        # here and covered by the `integration` job below.
-        run: cargo test --workspace --lib
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  build:
+    name: Build (all targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+
+  test:
+    name: Unit & snapshot tests
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `--lib` runs every crate's unit tests, including the insta codegen
+      # snapshot assertions (e.g. osdl-codegen-seaorm). No live database needed.
+      - run: cargo test --workspace --lib
 
   integration:
-    name: Integration tests (Postgres + Mongo via testcontainers)
+    name: Adapter integration (Postgres + Mongo via testcontainers)
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_DB: osdl_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    needs: [build]
+    # GitHub-hosted runners ship a Docker daemon; testcontainers spins up the
+    # Postgres and Mongo containers the live tests connect to.
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Run adapter integration tests
+      - name: Run live adapter tests
         run: cargo test -p osdl-adapter --test live_postgres_mongo
-        env:
-          TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/osdl_test
+
+  bench:
+    name: Performance SLO gate (Parse→Validate→Render < 500ms)
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Asserts REQ-NFR-PERF-001 / RTM R-04 (100 models < 500ms). Fails CI on
+      # any regression.
+      - run: cargo test -p osdl-bench
 
   docs:
-    name: Docs / links
+    name: Documentation existence
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,14 +100,40 @@ jobs:
           test -f docs/getting-started.md
           test -f docs/migration-guide.md
 
-  bench:
-    name: Performance benchmark (SLO gate)
+  audit:
+    name: Dependency audit (cargo audit / RUSTSEC)
     runs-on: ubuntu-latest
+    # Audit must be allowed to read the repo and open issues if configured;
+    # read-only here.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run pipeline SLO tests (100 models < 500ms)
-        # These assert REQ-NFR-PERF-001 / RTM R-04 and fail CI on regression.
-        run: cargo test -p osdl-bench
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Fast gate that every PR must pass; the heavy jobs run in parallel above.
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [fmt, clippy, build, test, integration, bench, docs, audit]
+    steps:
+      - name: Fail if any required job failed
+        run: |
+          echo "fmt=${{ needs.fmt.result }} clippy=${{ needs.clippy.result }} build=${{ needs.build.result }}"
+          echo "test=${{ needs.test.result }} integration=${{ needs.integration.result }} bench=${{ needs.bench.result }}"
+          echo "docs=${{ needs.docs.result }} audit=${{ needs.audit.result }}"
+          if [ "${{ needs.fmt.result }}" != "success" ] || \
+             [ "${{ needs.clippy.result }}" != "success" ] || \
+             [ "${{ needs.build.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.integration.result }}" != "success" ] || \
+             [ "${{ needs.bench.result }}" != "success" ] || \
+             [ "${{ needs.docs.result }}" != "success" ] || \
+             [ "${{ needs.audit.result }}" != "success" ]; then
+            echo "::error::One or more CI jobs failed"
+            exit 1
+          fi
+          echo "All CI jobs passed."
