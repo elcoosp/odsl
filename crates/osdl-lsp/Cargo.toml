@@ -7,8 +7,8 @@ authors.workspace = true
 
 [dependencies]
 async-lsp = { workspace = true }
-async-io = "2"
-futures = "0.3"
+async-io = { workspace = true }
+futures = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
@@ -16,5 +16,5 @@ osdl-core = { workspace = true }
 osdl-parser = { workspace = true }
 
 [dev-dependencies]
-async-channel = "2"
+async-channel = { workspace = true }
 serde_json = { workspace = true }

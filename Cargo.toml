@@ -33,45 +33,54 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # CLI & UX
-clap = { version = "4.6", features = ["derive"] }
-miette = { version = "7.6", features = ["fancy"] }
-thiserror = "2.0"
+clap = { version = "4.6.6", features = ["derive"] }
+miette = { version = "7.6.0", features = ["fancy"] }
+thiserror = "2.0.20"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-notify = "6"
+notify = "8.2.0"
 
 # Parsing & AST
-pest = "2.9"
-pest_derive = "2.9"
+pest = "2.9.0"
+pest_derive = "2.9.0"
 la-arena = "0.3.1"
 
 # Code Generation
-syn = { version = "3.0", features = ["full", "parsing"] }
-quote = "1.0"
-proc-macro2 = "1.0"
-prettyplease = "0.3"
+syn = { version = "3.0.3", features = ["full", "parsing"] }
+quote = "1.0.47"
+proc-macro2 = "1.0.107"
+prettyplease = "0.3.0"
 
 # Lockfile & Diffing
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-sha2 = "0.11"
-toml = "0.8"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+toml = "1"
 
 # Database Execution
-sea-orm = { version = "2.0", features = ["sqlx-sqlite", "sqlx-postgres", "sqlx-mysql", "runtime-tokio-native-tls"] }
-sea-orm-migration = "2.0"
-mongodb = "3.8"
-tokio = { version = "1.53", features = ["full"] }
-async-trait = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
+sea-orm = { version = "2.0.2", features = ["sqlx-sqlite", "sqlx-postgres", "sqlx-mysql", "runtime-tokio-native-tls"] }
+sea-orm-migration = "2.0.2"
+mongodb = "3.8.0"
+tokio = { version = "1.53.1", features = ["full"] }
+async-trait = "0.1.92"
+chrono = { version = "0.4.45", features = ["serde"] }
 
 # Language Server
-async-lsp = { version = "0.2", features = ["async-io"] }
+async-lsp = { version = "0.2.4", features = ["async-io"] }
 
 # Testing & benchmarking
-insta = "1.48"
-proptest = "1.4"
-criterion = "0.8"
+insta = "1.48.0"
+proptest = "1.11.0"
+criterion = "0.8.2"
+
+# LSP / async companions (literal pins in osdl-lsp)
+async-io = "2.6.0"
+futures = "0.3.34"
+async-channel = "2.5.0"
+
+# Integration test harness (osdl-adapter dev-deps)
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres", "mongo"] }
 
 # Internal crates
 osdl-core = { path = "crates/osdl-core" }

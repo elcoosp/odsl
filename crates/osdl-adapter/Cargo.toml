@@ -25,5 +25,5 @@ tokio.workspace = true
 osdl-core.workspace = true
 osdl-migrator.workspace = true
 osdl-parser.workspace = true
-testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["postgres", "mongo"] }
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
