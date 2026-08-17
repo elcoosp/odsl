@@ -56,9 +56,17 @@ pub fn render_drizzle(ast: &Ast) -> String {
 
     for (_, model) in ast.models() {
         let sql_name = model.name.to_lowercase();
-        out.push_str(&format!("export const {} = pgTable('{}', {{\n", model.name.to_lowercase(), sql_name));
+        out.push_str(&format!(
+            "export const {} = pgTable('{}', {{\n",
+            model.name.to_lowercase(),
+            sql_name
+        ));
         for (_, field) in model.fields() {
-            out.push_str(&format!("  {}: {},\n", to_snake(&field.name), render_drizzle_column(field)));
+            out.push_str(&format!(
+                "  {}: {},\n",
+                to_snake(&field.name),
+                render_drizzle_column(field)
+            ));
         }
         out.push_str("});\n\n");
     }
@@ -111,11 +119,7 @@ fn parse_enums(src: &str) -> Vec<DrizzleEnum> {
 /// Scan from `lines[*start]`; if that line begins a table declaration, find
 /// the matching closing `});` (tracking nested braces so `varchar('x', { ... })`
 /// doesn't fool the scanner) and return `(model_name, sql_name, body)`.
-fn scan_table(
-    lines: &[&str],
-    start: &mut usize,
-    line: &str,
-) -> Option<(String, String, String)> {
+fn scan_table(lines: &[&str], start: &mut usize, line: &str) -> Option<(String, String, String)> {
     let trimmed = line.trim();
     let rest = trimmed.strip_prefix("export const ")?;
     // <name> = <dialect>Table('<sql>', {
@@ -219,7 +223,9 @@ fn build_model(
             None => line,
         };
         let line = line.trim_end_matches(',').trim();
-        let Some(colon) = line.find(':') else { continue };
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
         let col = line[..colon].trim().to_string();
         let expr = line[colon + 1..].trim().to_string();
         if col.is_empty() || expr.is_empty() {
@@ -346,7 +352,9 @@ fn collect_modifiers(rest: &str) -> Vec<Modifier> {
             _ => {}
         }
     }
-    let Some(first_close) = first_close else { return mods };
+    let Some(first_close) = first_close else {
+        return mods;
+    };
     let tail = &rest[first_close + 1..];
     // Parse `.name(optional args)` chains.
     let mut j = 0;
@@ -414,9 +422,8 @@ fn map_drizzle_type(type_name: &str, enums: &[DrizzleEnum], field: &mut Field) -
         "boolean" | "bool" => FieldType::Scalar(ScalarType::Bool),
         "timestamp" | "timestamptz" | "date" | "time" => FieldType::Scalar(ScalarType::DateTime),
         "uuid" => FieldType::Scalar(ScalarType::Uuid),
-        "real" | "float" | "float4" | "float8" | "doublePrecision" | "numeric" | "decimal" | "decimaljs" => {
-            FieldType::Scalar(ScalarType::Float)
-        }
+        "real" | "float" | "float4" | "float8" | "doublePrecision" | "numeric" | "decimal"
+        | "decimaljs" => FieldType::Scalar(ScalarType::Float),
         "json" | "jsonb" => FieldType::Scalar(ScalarType::Json),
         "binary" | "bytea" => FieldType::Scalar(ScalarType::Binary),
         other => {
@@ -560,7 +567,10 @@ export const posts = pgTable('posts', {
         let ast = parse_drizzle(SAMPLE).expect("parse drizzle");
         let (_, u) = ast.models().find(|(_, m)| m.name == "users").unwrap();
         let id = u.field_by_name("id").unwrap();
-        assert!(matches!(u.fields[id].ty, FieldType::Scalar(ScalarType::Int)));
+        assert!(matches!(
+            u.fields[id].ty,
+            FieldType::Scalar(ScalarType::Int)
+        ));
         assert!(u.fields[id].has(Intent::Pk));
         let email = u.field_by_name("email").unwrap();
         assert!(u.fields[email].has(Intent::Uniq));

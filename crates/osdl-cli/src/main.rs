@@ -14,13 +14,13 @@
 use clap::{Parser, Subcommand};
 use osdl_adapter::migrate::{MigrationFormat, write_migration};
 use osdl_adapter::sql::SqlDialect;
+use osdl_codegen_drizzle::{drizzle_to_osdl, render_drizzle};
 use osdl_codegen_erd::{ErdFormat, render as render_erd};
 use osdl_codegen_graphql::GraphQLRenderer;
 use osdl_codegen_jsonschema::JsonSchemaRenderer;
 use osdl_codegen_mongo::MongoRenderer;
 use osdl_codegen_openapi::OpenApiRenderer;
 use osdl_codegen_prisma::{prisma_to_osdl, render_prisma};
-use osdl_codegen_drizzle::{drizzle_to_osdl, render_drizzle};
 use osdl_codegen_seaorm::SeaOrmRenderer;
 use osdl_codegen_trpc::TrpcRenderer;
 use osdl_codegen_ts_validators::{TsValidatorRenderer, ValidatorFlavor};
@@ -153,6 +153,20 @@ enum Command {
         /// Output file (`.prisma` for `to-prisma`, `.osdl` for `from-prisma`).
         #[arg(default_value = "schema.prisma")]
         out: std::path::PathBuf,
+    },
+    /// Health-check the project: lockfile in sync, generated code in sync,
+    /// migrations applied, and no schema drift (Phase 2.3).
+    Doctor {
+        /// Input `.osdl` file.
+        #[arg(default_value = "schema.osdl")]
+        input: std::path::PathBuf,
+        /// Target backend (affects validation + drift checks).
+        #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
+        target: Target,
+        /// Optionally check a live database (sqlite:// / postgres:// / mysql://)
+        /// for applied-migration drift.
+        #[arg(long)]
+        db_url: Option<String>,
     },
 }
 
@@ -343,6 +357,11 @@ fn main() -> Result<(), OsdlError> {
             input,
             out,
         } => cmd_convert(direction, &input, &out),
+        Command::Doctor {
+            input,
+            target,
+            db_url,
+        } => cmd_doctor(&input, target, db_url.as_deref()),
     }
 }
 
@@ -908,6 +927,150 @@ fn cmd_migrate_status(
     Ok(())
 }
 
+/// `osdl doctor` — a single health-check command (Phase 2.3).
+///
+/// Verifies the project and exits non-zero if any critical check fails: the
+/// `schema.osdl` file must parse and validate (otherwise the project is
+/// broken); the `osdl.lock` file must be present and readable; and there must be
+/// no schema drift, i.e. the desired schema matches the deployed lockfile
+/// (`plan_migration` produces no ops). With `--db-url`, the live database is
+/// also checked for the current schema checksum. Lint findings are always
+/// reported but never fail the doctor (they are advisory).
+fn cmd_doctor(
+    input: &std::path::Path,
+    target: Target,
+    db_url: Option<&str>,
+) -> Result<(), OsdlError> {
+    let mut problems = 0usize;
+
+    // 1. Parse + validate the desired schema.
+    println!("=== schema.osdl ===");
+    let ast = match load_ast(input, target) {
+        Ok(a) => {
+            println!(
+                "  ✓ parsed and validated ({} models, {} views)",
+                a.models().count(),
+                a.views().count()
+            );
+            a
+        }
+        Err(e) => {
+            println!("  ✗ parse/validate failed: {e}");
+            return Err(e);
+        }
+    };
+
+    // 2. Lockfile presence.
+    println!("=== osdl.lock ===");
+    let lock_path = input.with_file_name("osdl.lock");
+    let current = match read_lockfile(&lock_path)? {
+        Some(lf) => {
+            println!("  ✓ lockfile present (checksum {})", &lf.checksum);
+            lf
+        }
+        None => {
+            println!(
+                "  ! no lockfile found at {} — run `osdl migrate plan --apply`",
+                lock_path.display()
+            );
+            problems += 1;
+            Lockfile {
+                seeds: vec![],
+                version: Lockfile::VERSION,
+                checksum: String::new(),
+                models: vec![],
+                views: vec![],
+            }
+        }
+    };
+
+    // 3. Drift: desired schema vs deployed lockfile.
+    println!("=== drift ===");
+    if current.models.is_empty() && current.views.is_empty() {
+        println!("  ! no deployed schema to diff against (lockfile empty)");
+        problems += 1;
+    } else {
+        let plan = plan_migration(&current, &ast)?;
+        if plan.ops.is_empty() {
+            println!("  ✓ in sync — no pending migrations");
+        } else {
+            println!("  ✗ drift detected — {} pending change(s):", plan.ops.len());
+            for line in plan.describe() {
+                println!("    + {line}");
+            }
+            problems += 1;
+        }
+    }
+
+    // 4. Lint summary (advisory). Style rules (missing timestamps / model doc)
+    //    are reported but never fail the doctor — they describe boilerplate the
+    //    `config` block exists to remove, not a project-health problem.
+    println!("=== lint ===");
+    let linter = osdl_core::lint::Linter::new(osdl_core::lint::LintConfig::default());
+    let findings = linter.lint(&ast);
+    if findings.is_empty() {
+        println!("  ✓ no lint findings");
+    } else {
+        let errors = findings
+            .iter()
+            .filter(|f| f.severity == osdl_core::lint::Severity::Error)
+            .count();
+        let warnings = findings.len() - errors;
+        println!("  ! {errors} error(s), {warnings} warning(s)");
+        for f in &findings {
+            println!("    - [{}] {}: {}", f.severity, f.rule.as_str(), f.message);
+        }
+        // Only *non-style* errors count as project-health problems.
+        let hard_errors = findings
+            .iter()
+            .filter(|f| {
+                f.severity == osdl_core::lint::Severity::Error
+                    && !matches!(
+                        f.rule,
+                        osdl_core::lint::LintRule::MissingTimestamps
+                            | osdl_core::lint::LintRule::MissingModelDoc
+                    )
+            })
+            .count();
+        problems += hard_errors;
+    }
+
+    // 5. Optional live-database sync.
+    if let Some(url) = db_url {
+        println!("=== live database ({url}) ===");
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
+        let adapter = runtime
+            .block_on(osdl_adapter::connect(url))
+            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
+        runtime
+            .block_on(adapter.ensure_history_table())
+            .map_err(|e| io_err(format!("history table: {e}")))?;
+        let applied = runtime
+            .block_on(adapter.applied_migrations())
+            .map_err(|e| io_err(format!("history read: {e}")))?;
+        let target_lock = Lockfile::from_ast(&ast);
+        if applied.iter().any(|n| n == &target_lock.checksum) {
+            println!("  ✓ current schema checksum is applied");
+        } else {
+            println!(
+                "  ✗ schema checksum {} NOT applied — database is behind or diverged",
+                target_lock.checksum
+            );
+            problems += 1;
+        }
+    }
+
+    if problems == 0 {
+        println!("\n✓ doctor: healthy");
+        Ok(())
+    } else {
+        Err(io_err(format!(
+            "doctor found {problems} problem(s) — see report above"
+        )))
+    }
+}
+
 /// Apply `up`, assert the live schema matches the target, apply `down`, and
 /// assert the live schema reverts to empty. The database at `db_url` is wiped
 /// first so the test is deterministic and repeatable.
@@ -1425,6 +1588,55 @@ Post
         std::fs::write(&schema, "User\n  id uuid -pk\n").unwrap();
         let err = cmd_erd(&schema, "svg", None).unwrap_err();
         assert!(format!("{err}").contains("unknown ERD format"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    use std::sync::atomic::{AtomicU64 as DoctorSeq, Ordering as DoctorOrd};
+    static DOCTOR_TEST_SEQ: DoctorSeq = AtomicU64::new(0);
+
+    fn doctor_test_dir(tag: &str) -> std::path::PathBuf {
+        let n = DOCTOR_TEST_SEQ.fetch_add(1, DoctorOrd::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("osdl-doctest-{}-{}-{}", std::process::id(), tag, n));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn write_in_sync_lock(dir: &std::path::Path, src: &str) -> std::path::PathBuf {
+        let schema = dir.join("schema.osdl");
+        std::fs::write(&schema, src).unwrap();
+        let project = parse_project(&schema).expect("schema parses");
+        let lf = Lockfile::from_ast(&project.ast);
+        let lock = dir.join("osdl.lock");
+        write_lockfile(&lock, &lf).expect("lockfile writes");
+        schema
+    }
+
+    #[test]
+    fn doctor_reports_healthy_when_in_sync() {
+        let dir = doctor_test_dir("healthy");
+        let schema = write_in_sync_lock(&dir, "User\n  id uuid -pk\n  email string -uniq\n");
+        let result = cmd_doctor(&schema, Target::SeaOrmSqlite, None);
+        assert!(result.is_ok(), "doctor should pass on an in-sync project");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn doctor_detects_drift() {
+        let dir = doctor_test_dir("drift");
+        // Write an in-sync baseline so the lockfile exists.
+        let schema = write_in_sync_lock(&dir, "User\n  id uuid -pk\n  email string -uniq\n");
+        // Now change the schema so it no longer matches the lockfile.
+        std::fs::write(
+            &schema,
+            "User\n  id uuid -pk\n  email string -uniq\n  name string\n",
+        )
+        .unwrap();
+        let result = cmd_doctor(&schema, Target::SeaOrmSqlite, None);
+        assert!(
+            result.is_err(),
+            "doctor should fail when schema has drifted"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

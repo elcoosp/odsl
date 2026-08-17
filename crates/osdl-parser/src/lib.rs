@@ -496,7 +496,8 @@ fn resolve_file(
             if existing != val {
                 return Err(OsdlError::Parse(ParseError::new(format!(
                     "duplicate doc-comment for field `{}.{}` (imported via `use` from {})",
-                    key.0, key.1,
+                    key.0,
+                    key.1,
                     canon.display()
                 ))));
             }
@@ -509,7 +510,8 @@ fn resolve_file(
             if existing != val {
                 return Err(OsdlError::Parse(ParseError::new(format!(
                     "duplicate deprecation for field `{}.{}` (imported via `use` from {})",
-                    key.0, key.1,
+                    key.0,
+                    key.1,
                     canon.display()
                 ))));
             }
