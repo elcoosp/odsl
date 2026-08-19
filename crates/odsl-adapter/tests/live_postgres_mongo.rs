@@ -10,34 +10,39 @@ use odsl_adapter::connect;
 use odsl_core::ast::LockModel;
 use odsl_core::lockfile::{Lockfile, lock_field};
 use odsl_migrator::{MigrationOp, MigrationPlan};
+use testcontainers::ImageExt;
+use testcontainers::core::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::{mongo::Mongo, postgres::Postgres};
 
-/// Start a Postgres container; return its connection URL, or `None` if Docker
-/// is unavailable (in which case the calling test should skip).
-async fn start_postgres() -> Option<String> {
-    let container = Postgres::default().start().await.ok()?;
+/// Start a Postgres container; return its connection URL and the live
+/// container handle (which must be kept alive for the duration of the test,
+/// otherwise `Drop` removes the container before the caller can connect).
+/// Returns `None` if Docker is unavailable (in which case the test skips).
+async fn start_postgres() -> Option<(String, ContainerAsync<Postgres>)> {
+    let container = Postgres::default().with_tag("18").start().await.ok()?;
     let host = container.get_host().await.ok()?;
     let port = container.get_host_port_ipv4(5432).await.ok()?;
-    // testcontainers-modules Postgres defaults: user postgres, password postgres, db postgres.
-    Some(format!(
-        "postgres://postgres:postgres@{}:{}/postgres",
-        host, port
+    // testcontainers-modules Postgres defaults: user postgres, password
+    // postgres, db postgres.
+    Some((
+        format!("postgres://postgres:postgres@{host}:{port}/postgres"),
+        container,
     ))
 }
 
-/// Start a Mongo container; return its connection URL, or `None` if Docker is
-/// unavailable.
-async fn start_mongo() -> Option<String> {
+/// Start a Mongo container; return its connection URL and the live container
+/// handle (kept alive by the caller). Returns `None` if Docker is unavailable.
+async fn start_mongo() -> Option<(String, ContainerAsync<Mongo>)> {
     let container = Mongo::default().start().await.ok()?;
     let host = container.get_host().await.ok()?;
     let port = container.get_host_port_ipv4(27017).await.ok()?;
-    Some(format!("mongodb://{}:{}/odsl", host, port))
+    Some((format!("mongodb://{host}:{port}/odsl"), container))
 }
 
 #[tokio::test]
 async fn postgres_apply_create_model_live() {
-    let Some(url) = start_postgres().await else {
+    let Some((url, _pg)) = start_postgres().await else {
         eprintln!("skipping: Docker / Postgres container unavailable");
         return;
     };
@@ -77,7 +82,7 @@ async fn postgres_apply_create_model_live() {
 
 #[tokio::test]
 async fn mongo_apply_create_model_live() {
-    let Some(url) = start_mongo().await else {
+    let Some((url, _mongo)) = start_mongo().await else {
         eprintln!("skipping: Docker / Mongo container unavailable");
         return;
     };
