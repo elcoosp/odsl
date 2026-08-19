@@ -2913,6 +2913,266 @@ dependencies = [
 ]
 
 [[package]]
+name = "odsl-adapter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "mongodb",
+ "odsl-core",
+ "odsl-migrator",
+ "odsl-parser",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "odsl-bench"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "odsl-codegen-mongo",
+ "odsl-codegen-seaorm",
+ "odsl-core",
+ "odsl-parser",
+]
+
+[[package]]
+name = "odsl-cli"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "insta",
+ "miette",
+ "notify",
+ "odsl-adapter",
+ "odsl-codegen",
+ "odsl-codegen-drizzle",
+ "odsl-codegen-erd",
+ "odsl-codegen-graphql",
+ "odsl-codegen-jsonschema",
+ "odsl-codegen-mongo",
+ "odsl-codegen-openapi",
+ "odsl-codegen-prisma",
+ "odsl-codegen-seaorm",
+ "odsl-codegen-trpc",
+ "odsl-codegen-ts-validators",
+ "odsl-codegen-typescript",
+ "odsl-core",
+ "odsl-lsp",
+ "odsl-mcp",
+ "odsl-migrator",
+ "odsl-parser",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "odsl-codegen"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "odsl-codegen-drizzle"
+version = "0.1.0"
+dependencies = [
+ "la-arena",
+ "odsl-core",
+ "odsl-parser",
+]
+
+[[package]]
+name = "odsl-codegen-erd"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "odsl-parser",
+ "serde",
+]
+
+[[package]]
+name = "odsl-codegen-graphql"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "odsl-parser",
+ "serde",
+]
+
+[[package]]
+name = "odsl-codegen-jsonschema"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "odsl-parser",
+ "serde_json",
+]
+
+[[package]]
+name = "odsl-codegen-mongo"
+version = "0.1.0"
+dependencies = [
+ "odsl-codegen",
+ "odsl-core",
+ "odsl-parser",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "odsl-codegen-openapi"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "odsl-parser",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "odsl-codegen-prisma"
+version = "0.1.0"
+dependencies = [
+ "la-arena",
+ "odsl-core",
+ "odsl-parser",
+]
+
+[[package]]
+name = "odsl-codegen-seaorm"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "odsl-codegen",
+ "odsl-core",
+ "odsl-parser",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "odsl-codegen-trpc"
+version = "0.1.0"
+dependencies = [
+ "odsl-codegen-ts-validators",
+ "odsl-core",
+ "odsl-parser",
+]
+
+[[package]]
+name = "odsl-codegen-ts-validators"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "odsl-parser",
+]
+
+[[package]]
+name = "odsl-codegen-typescript"
+version = "0.1.0"
+dependencies = [
+ "odsl-core",
+ "odsl-parser",
+ "serde",
+]
+
+[[package]]
+name = "odsl-core"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "la-arena",
+ "miette",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "odsl-lsp"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "async-io",
+ "async-lsp",
+ "futures",
+ "odsl-core",
+ "odsl-parser",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "odsl-mcp"
+version = "0.1.0"
+dependencies = [
+ "odsl-adapter",
+ "odsl-codegen-graphql",
+ "odsl-codegen-jsonschema",
+ "odsl-codegen-mongo",
+ "odsl-codegen-openapi",
+ "odsl-codegen-seaorm",
+ "odsl-codegen-trpc",
+ "odsl-codegen-ts-validators",
+ "odsl-codegen-typescript",
+ "odsl-core",
+ "odsl-migrator",
+ "odsl-parser",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "odsl-migrator"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "odsl-core",
+ "odsl-parser",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "odsl-parser"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "insta",
+ "la-arena",
+ "miette",
+ "odsl-core",
+ "pest",
+ "pest_derive",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2984,266 +3244,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "osdl-adapter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "mongodb",
- "osdl-core",
- "osdl-migrator",
- "osdl-parser",
- "sea-orm",
- "serde",
- "serde_json",
- "testcontainers",
- "testcontainers-modules",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "osdl-bench"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "osdl-codegen-mongo",
- "osdl-codegen-seaorm",
- "osdl-core",
- "osdl-parser",
-]
-
-[[package]]
-name = "osdl-cli"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "insta",
- "miette",
- "notify",
- "osdl-adapter",
- "osdl-codegen",
- "osdl-codegen-drizzle",
- "osdl-codegen-erd",
- "osdl-codegen-graphql",
- "osdl-codegen-jsonschema",
- "osdl-codegen-mongo",
- "osdl-codegen-openapi",
- "osdl-codegen-prisma",
- "osdl-codegen-seaorm",
- "osdl-codegen-trpc",
- "osdl-codegen-ts-validators",
- "osdl-codegen-typescript",
- "osdl-core",
- "osdl-lsp",
- "osdl-mcp",
- "osdl-migrator",
- "osdl-parser",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "osdl-codegen"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn 3.0.3",
-]
-
-[[package]]
-name = "osdl-codegen-drizzle"
-version = "0.1.0"
-dependencies = [
- "la-arena",
- "osdl-core",
- "osdl-parser",
-]
-
-[[package]]
-name = "osdl-codegen-erd"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "osdl-parser",
- "serde",
-]
-
-[[package]]
-name = "osdl-codegen-graphql"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "osdl-parser",
- "serde",
-]
-
-[[package]]
-name = "osdl-codegen-jsonschema"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "osdl-parser",
- "serde_json",
-]
-
-[[package]]
-name = "osdl-codegen-mongo"
-version = "0.1.0"
-dependencies = [
- "osdl-codegen",
- "osdl-core",
- "osdl-parser",
- "prettyplease",
- "proc-macro2",
- "quote",
- "serde_json",
- "syn 3.0.3",
-]
-
-[[package]]
-name = "osdl-codegen-openapi"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "osdl-parser",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "osdl-codegen-prisma"
-version = "0.1.0"
-dependencies = [
- "la-arena",
- "osdl-core",
- "osdl-parser",
-]
-
-[[package]]
-name = "osdl-codegen-seaorm"
-version = "0.1.0"
-dependencies = [
- "insta",
- "osdl-codegen",
- "osdl-core",
- "osdl-parser",
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn 3.0.3",
-]
-
-[[package]]
-name = "osdl-codegen-trpc"
-version = "0.1.0"
-dependencies = [
- "osdl-codegen-ts-validators",
- "osdl-core",
- "osdl-parser",
-]
-
-[[package]]
-name = "osdl-codegen-ts-validators"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "osdl-parser",
-]
-
-[[package]]
-name = "osdl-codegen-typescript"
-version = "0.1.0"
-dependencies = [
- "osdl-core",
- "osdl-parser",
- "serde",
-]
-
-[[package]]
-name = "osdl-core"
-version = "0.1.0"
-dependencies = [
- "clap",
- "la-arena",
- "miette",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "osdl-lsp"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "async-io",
- "async-lsp",
- "futures",
- "osdl-core",
- "osdl-parser",
- "serde_json",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "osdl-mcp"
-version = "0.1.0"
-dependencies = [
- "osdl-adapter",
- "osdl-codegen-graphql",
- "osdl-codegen-jsonschema",
- "osdl-codegen-mongo",
- "osdl-codegen-openapi",
- "osdl-codegen-seaorm",
- "osdl-codegen-trpc",
- "osdl-codegen-ts-validators",
- "osdl-codegen-typescript",
- "osdl-core",
- "osdl-migrator",
- "osdl-parser",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "osdl-migrator"
-version = "0.1.0"
-dependencies = [
- "insta",
- "osdl-core",
- "osdl-parser",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "osdl-parser"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "insta",
- "la-arena",
- "miette",
- "osdl-core",
- "pest",
- "pest_derive",
- "proptest",
- "thiserror",
 ]
 
 [[package]]

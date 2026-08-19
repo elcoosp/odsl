@@ -1,0 +1,1259 @@
+//! Render `MigrationPlan`s to standalone migration artifacts on disk.
+//!
+//! Two backend formats are supported:
+//!
+//! * **`Sql`** — a timestamped `.sql` file containing `up`/`down` sections that
+//!   mirror exactly the DDL the live [`crate::sql`] adapter would run. This is a
+//!   plain SQL migration (the "raw SQL" style SeaORM also supports).
+//! * **`SeaOrm`** — a full `sea-orm-migration` **crate** under `migration/`:
+//!   `Cargo.toml`, `src/lib.rs` (the `Migrator`), `src/main.rs` (the migrator
+//!   CLI) and one `src/m{ts}_{slug}.rs` file per diff. The migration bodies use
+//!   the `schema::*` column helpers and `ForeignKey::create()` — i.e. pure
+//!   SeaQuery builders, so the generated migrations stay multi-backend and are
+//!   **not** raw SQL strings (which would forfeit SeaORM's portability).
+//!
+//! File names are `{timestamp}_{slug}.sql` / `m{timestamp}_{slug}.rs`, derived
+//! from the plan, so the same schema delta always yields the same file name —
+//! satisfying the spec's determinism requirement (REQ-NFR-DET-001).
+
+use chrono::Utc;
+use odsl_core::lockfile::Lockfile;
+use odsl_migrator::{MigrationOp, MigrationPlan};
+use std::path::Path;
+
+use crate::sql::{SqlDialect, op_to_sql};
+
+/// How a migration plan should be materialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationFormat {
+    /// A standalone `.sql` file (up + down sections).
+    Sql,
+    /// A full `sea-orm-migration` crate (`migration/…`) using SeaQuery builders.
+    SeaOrm,
+}
+
+impl MigrationFormat {
+    /// Pick a format from the ODSL compile target.
+    pub fn from_target(target: odsl_core::Target) -> Self {
+        match target {
+            odsl_core::Target::Mongo => MigrationFormat::Sql, // Mongo uses jsonSchema DDL in .sql form
+            _ => MigrationFormat::Sql,
+        }
+    }
+}
+
+/// A single rendered migration file.
+#[derive(Debug, Clone)]
+pub struct RenderedMigration {
+    /// File name, e.g. `20260815123045_create_post.sql`.
+    pub file_name: String,
+    /// Full file contents.
+    pub contents: String,
+}
+
+fn slugify(plan: &MigrationPlan) -> String {
+    // Stable slug from the ops: created/dropped model names joined by `_`.
+    let mut parts: Vec<String> = plan
+        .ops
+        .iter()
+        .map(|op| match op {
+            MigrationOp::CreateModel { model } => format!("create_{}", model.to_lowercase()),
+            MigrationOp::DropModel { model } => format!("drop_{}", model.to_lowercase()),
+            MigrationOp::AddField { model, field, .. } => {
+                format!("add_{}_{}", model.to_lowercase(), field.to_lowercase())
+            }
+            MigrationOp::DropField { model, field, .. } => {
+                format!("drop_{}_{}", model.to_lowercase(), field.to_lowercase())
+            }
+            MigrationOp::AlterField { model, field, .. } => {
+                format!("alter_{}_{}", model.to_lowercase(), field.to_lowercase())
+            }
+            MigrationOp::CreateView { view } => format!("create_view_{}", view.to_lowercase()),
+            MigrationOp::DropView { view } => format!("drop_view_{}", view.to_lowercase()),
+            MigrationOp::SeedData { model } => format!("seed_{}", model.to_lowercase()),
+        })
+        .collect();
+    parts.sort();
+    let joined = parts.join("_");
+    if joined.is_empty() {
+        "noop".to_string()
+    } else {
+        joined
+    }
+}
+
+fn timestamp() -> String {
+    // UTC compact timestamp; stable within a run, unique across runs.
+    Utc::now().format("%Y%m%d%H%M%S").to_string()
+}
+
+/// Render a plan into a single migration file (`.sql` only). The SeaORM crate
+/// form is rendered/written by [`write_migration`] directly because it spans
+/// several files.
+pub fn render_migration(
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> RenderedMigration {
+    let file_name = format!("{}_{}.sql", timestamp(), slugify(plan));
+    let contents = render_sql(dialect, plan, target, current);
+    RenderedMigration {
+        file_name,
+        contents,
+    }
+}
+
+fn render_sql(
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> String {
+    let up: Vec<String> = plan
+        .ops
+        .iter()
+        .flat_map(|op| match op_to_sql(dialect, op, target, current) {
+            Ok(stmts) => stmts,
+            Err(e) => vec![format!("-- ERROR: migration could not be rendered: {e}")],
+        })
+        .collect();
+    // Down is the reverse op order with inverse statements.
+    let down: Vec<String> = plan
+        .ops
+        .iter()
+        .rev()
+        .filter_map(|op| down_sql(dialect, op, target, current))
+        .collect();
+
+    let mut out = String::new();
+    out.push_str("-- ODSL auto-generated migration\n");
+    out.push_str("-- up\n");
+    if up.is_empty() {
+        out.push_str("-- (no changes)\n");
+    } else {
+        for stmt in &up {
+            out.push_str(stmt);
+            out.push_str(";\n");
+        }
+    }
+    out.push_str("\n-- down\n");
+    if down.is_empty() {
+        out.push_str("-- (no changes)\n");
+    } else {
+        for stmt in &down {
+            out.push_str(stmt);
+            out.push_str(";\n");
+        }
+    }
+    out
+}
+
+/// Render the `down` (rollback) DDL for a plan: the inverse op order with
+/// inverse statements. Each returned string is a complete statement (without a
+/// trailing semicolon) suitable for concatenation.
+pub fn render_down_sql(
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> Vec<String> {
+    plan.ops
+        .iter()
+        .rev()
+        .filter_map(|op| down_sql(dialect, op, target, current))
+        .collect()
+}
+
+/// Inverse DDL for a single op (used by the down section).
+///
+/// The down of an op is the *inverse* change, which always requires the prior
+/// schema. We source that from `current` (the lockfile we are migrating from)
+/// and reuse the existing `op_to_sql` renderer so the dialect handling stays
+/// in one place:
+/// * `CreateModel`   → `DROP TABLE` (table no longer exists after the up).
+/// * `DropModel`     → recreate the table from `current` (the inverse of a drop).
+/// * `AddField`      → `DROP COLUMN` (remove what the up added).
+/// * `DropField`     → re-add the column from `current` (inverse of a drop).
+/// * `AlterField`    → restore the prior column definition from `current`.
+///
+/// This eliminates the old `None` gaps and comment-only guards, which were a
+/// real data-loss/rollback risk.
+fn down_sql(
+    dialect: SqlDialect,
+    op: &MigrationOp,
+    _target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> Option<String> {
+    use crate::naming::{quote_ident_for, table_name};
+    match op {
+        MigrationOp::CreateModel { model } => Some(format!(
+            "DROP TABLE {}",
+            quote_ident_for(dialect, &table_name(model))
+        )),
+        MigrationOp::DropModel { model } => {
+            // Inverse of a drop is recreating the table from the prior lockfile.
+            let cur = current?;
+            let _ = cur.model_by_name(model)?;
+            crate::sql::op_to_sql(
+                dialect,
+                &MigrationOp::CreateModel {
+                    model: model.clone(),
+                },
+                cur,
+                Some(cur),
+            )
+            .ok()
+            .map(|stmts| stmts.join("; "))
+        }
+        MigrationOp::AddField { model, field, .. } => Some(format!(
+            "ALTER TABLE {} DROP COLUMN {}",
+            quote_ident_for(dialect, &table_name(model)),
+            quote_ident_for(dialect, field)
+        )),
+        MigrationOp::DropField { model, field } => {
+            // Inverse of a drop is re-adding the column from the prior lockfile.
+            let cur = current?;
+            let lm = cur.model_by_name(model)?;
+            let prior = lm.fields.iter().find(|f| f.name == *field)?;
+            let ty = prior.ty.clone();
+            let nullable = prior.intents.iter().any(|i| i == "-null");
+            let uniq = prior.intents.iter().any(|i| i == "-uniq");
+            crate::sql::op_to_sql(
+                dialect,
+                &MigrationOp::AddField {
+                    model: model.clone(),
+                    field: field.clone(),
+                    ty,
+                    nullable,
+                    uniq,
+                },
+                cur,
+                Some(cur),
+            )
+            .ok()
+            .map(|stmts| stmts.join("; "))
+        }
+        MigrationOp::AlterField { model, field, .. } => {
+            // Inverse of an alter is restoring the prior column definition.
+            let cur = current?;
+            let lm = cur.model_by_name(model)?;
+            let prior = lm.fields.iter().find(|f| f.name == *field)?;
+            let ty = prior.ty.clone();
+            let nullable = prior.intents.iter().any(|i| i == "-null");
+            let uniq = prior.intents.iter().any(|i| i == "-uniq");
+            crate::sql::op_to_sql(
+                dialect,
+                &MigrationOp::AlterField {
+                    model: model.clone(),
+                    field: field.clone(),
+                    new_ty: ty,
+                    nullable,
+                    uniq,
+                },
+                cur,
+                Some(cur),
+            )
+            .ok()
+            .map(|stmts| stmts.join("; "))
+        }
+        MigrationOp::CreateView { view } => Some(format!(
+            "DROP VIEW IF EXISTS {}",
+            quote_ident_for(dialect, view)
+        )),
+        MigrationOp::DropView { view } => {
+            let cur = current?;
+            let v = cur.view_by_name(view)?;
+            Some(crate::sql::create_view_sql(dialect, v))
+        }
+        // Seed data is inserted, never deleted by a down migration: the down
+        // direction must not destroy data, so we emit no statement.
+        MigrationOp::SeedData { .. } => None,
+    }
+}
+
+/// SeaQuery column helper for a named field (non-PK path).
+fn seaorm_column_for(col: &str, keyword: &str, nullable: bool, uniq: bool) -> String {
+    let helper = match keyword {
+        "string" => "string",
+        "text" => "text",
+        "int" => "integer",
+        "bigint" => "big_integer",
+        "float" => "float",
+        "bool" => "boolean",
+        "datetime" => "timestamp_with_time_zone",
+        "date" => "date",
+        "uuid" => "uuid",
+        "json" => "json",
+        "binary" => "binary",
+        other => other,
+    };
+    match (nullable, uniq) {
+        (false, false) => format!("{helper}(\"{col}\")"),
+        (true, false) => format!("{helper}_null(\"{col}\")"),
+        (false, true) => format!("{helper}_uniq(\"{col}\")"),
+        (true, true) => format!("{helper}_null(\"{col}\").unique_key()"),
+    }
+}
+
+fn migration_timestamp_name(slug: &str) -> String {
+    format!("m{}_{}", timestamp(), slug)
+}
+
+/// Emit the `up` body (SeaQuery statements) for one op.
+fn seaorm_up_stmt(op: &MigrationOp, target: &Lockfile) -> Vec<String> {
+    use crate::naming::table_name;
+    match op {
+        MigrationOp::CreateModel { model } => {
+            let tbl = table_name(model);
+            let lm = target.model_by_name(model);
+            let mut cols: Vec<String> = Vec::new();
+            let mut fk_binds: Vec<String> = Vec::new();
+            let mut fk_refs: Vec<String> = Vec::new();
+            let mut idx_binds: Vec<String> = Vec::new();
+            let mut idx_calls: Vec<String> = Vec::new();
+            if let Some(lm) = lm {
+                for f in &lm.fields {
+                    let is_pk = f.intents.iter().any(|x| x == "-pk");
+                    let nullable = f.intents.iter().any(|x| x == "-null");
+                    let uniq = f.intents.iter().any(|x| x == "-uniq");
+                    let has_index = f.intents.iter().any(|x| x == "-index");
+                    if f.ty.contains('.') {
+                        // Reference: column type follows the referenced PK.
+                        // Emit the FK inline in Table::create() so it works on
+                        // SQLite too (SQLite rejects ALTER/add FK post-creation).
+                        let ref_ty = referenced_pk_type(target, f.ty.trim());
+                        let col_helper = match ref_ty.as_str() {
+                            "uuid" => "uuid",
+                            "int" => "integer",
+                            "bigint" => "big_integer",
+                            _ => "string",
+                        };
+                        let col = if nullable {
+                            format!("{col_helper}_null(\"{}\")", f.name)
+                        } else {
+                            format!("{col_helper}(\"{}\")", f.name)
+                        };
+                        cols.push(col);
+                        let (ref_model, ref_col) = split_ref(f.ty.trim());
+                        let ref_tbl = table_name(&ref_model);
+                        let idx = fk_binds.len();
+                        let del = fk_action_str(&f.on_delete);
+                        let upd = fk_action_str(&f.on_update);
+                        fk_binds.push(format!(
+                            "        let mut fk{idx} = ForeignKey::create();\n        fk{idx}.from(\"{tbl}\", \"{}\").to(\"{}\", \"{}\").on_delete({del}).on_update({upd});",
+                            f.name, ref_tbl, ref_col
+                        ));
+                        fk_refs.push(format!(".foreign_key(&mut fk{idx})"));
+                    } else if is_pk {
+                        cols.push(pk_column(&f.ty, &f.name));
+                    } else {
+                        cols.push(seaorm_column_for(&f.name, &f.ty, nullable, uniq));
+                    }
+                    if has_index && !is_pk {
+                        // Secondary (non-unique) index via SeaQuery Index::create().
+                        let i = idx_binds.len();
+                        idx_binds.push(format!(
+                            "        let mut ix{i} = Index::create();\n        ix{i}.name(\"idx_{tbl}_{}\").table(\"{}\").col(\"{}\");",
+                            f.name, tbl, f.name
+                        ));
+                        idx_calls.push(format!("        manager.create_index(ix{i}).await?;"));
+                    }
+                }
+            }
+            // Model-level composite indexes (`-index a,b` / `-uniq a,b`) with
+            // optional Phase 1.2 options: -type, -prefix, -where, -order.
+            if let Some(lm) = &lm {
+                for index in &lm.indexes {
+                    let i = idx_binds.len();
+                    let unique_lit = index.unique;
+                    let mut binds = format!(
+                        "        let mut ix{i} = Index::create();\n        ix{i}.name(\"{name}\").table(\"{tbl}\")",
+                        name = index.name
+                    );
+                    for f in &index.fields {
+                        if let Some(prefix) = index.prefix_length {
+                            binds.push_str(&format!(
+                                "\n        ix{i}.col((ColumnRef::Column(\"{f}\".into()), {prefix}))"
+                            ));
+                        } else {
+                            binds.push_str(&format!("\n        ix{i}.col(\"{f}\")"));
+                        }
+                    }
+                    if unique_lit {
+                        binds.push_str(&format!("\n        ix{i}.unique()"));
+                    }
+                    if let Some(t) = &index.index_type {
+                        binds.push_str(&format!(
+                            "\n        ix{i}.index_type(IndexType::from(\"{t}\"))"
+                        ));
+                    }
+                    if let Some(w) = &index.where_clause {
+                        binds.push_str(&format!("\n        ix{i}.where_(\"{w}\")"));
+                    }
+                    if let Some(o) = &index.order {
+                        let ord = if o.eq_ignore_ascii_case("desc") {
+                            "Order::Desc"
+                        } else {
+                            "Order::Asc"
+                        };
+                        binds.push_str(&format!("\n        ix{i}.order({ord})"));
+                    }
+                    binds.push(';');
+                    idx_binds.push(binds);
+                    idx_calls.push(format!("        manager.create_index(ix{i}).await?;"));
+                }
+            }
+            let mut lines: Vec<String> = Vec::new();
+            for b in &fk_binds {
+                lines.push(b.clone());
+            }
+            for b in &idx_binds {
+                lines.push(b.clone());
+            }
+            lines.push(format!(
+                "        manager.create_table(\n            Table::create()\n                .table(\"{tbl}\")\n                .if_not_exists()"
+            ));
+            for c in &cols {
+                lines.push(format!("                .col({c})"));
+            }
+            for r in &fk_refs {
+                lines.push(format!("                {r}"));
+            }
+            lines.push("                .to_owned()\n        ).await?;".to_string());
+            for c in &idx_calls {
+                lines.push(c.clone());
+            }
+            lines
+        }
+        MigrationOp::AddField {
+            model,
+            field,
+            ty,
+            nullable,
+            uniq,
+        } => {
+            let tbl = table_name(model);
+            if ty.contains('.') {
+                let ref_ty = referenced_pk_type(target, ty.trim());
+                let col_helper = match ref_ty.as_str() {
+                    "uuid" => "uuid",
+                    "int" => "integer",
+                    "bigint" => "big_integer",
+                    _ => "string",
+                };
+                let col = if *nullable {
+                    format!("{col_helper}_null(\"{field}\")")
+                } else {
+                    format!("{col_helper}(\"{field}\")")
+                };
+                let (ref_model, ref_col) = split_ref(ty.trim());
+                let ref_tbl = table_name(&ref_model);
+                let (del, upd) = target
+                    .model_by_name(model)
+                    .and_then(|m| m.fields.iter().find(|f| f.name == *field))
+                    .map(|f| (fk_action_str(&f.on_delete), fk_action_str(&f.on_update)))
+                    .unwrap_or(("ForeignKeyAction::Cascade", "ForeignKeyAction::Cascade"));
+                vec![
+                    format!(
+                        "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .add_column({col})\n                .to_owned()\n        ).await?;"
+                    ),
+                    format!(
+                        "        let mut fk = ForeignKey::create();\n        fk.from(\"{tbl}\", \"{field}\").to(\"{ref_tbl}\", \"{ref_col}\").on_delete({del}).on_update({upd});\n        manager.create_foreign_key(fk).await?;"
+                    ),
+                ]
+            } else {
+                let mut stmts = vec![format!(
+                    "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .add_column({})\n                .to_owned()\n        ).await?;",
+                    seaorm_column_for(field, ty, *nullable, *uniq)
+                )];
+                let wants_index = target
+                    .model_by_name(model)
+                    .and_then(|m| m.fields.iter().find(|f| f.name == *field))
+                    .map(|f| f.intents.iter().any(|i| i == "-index"))
+                    .unwrap_or(false);
+                if !*uniq && wants_index {
+                    stmts.push(format!(
+                        "        let mut ix = Index::create();\n        ix.name(\"idx_{tbl}_{field}\").table(\"{tbl}\").col(\"{field}\");\n        manager.create_index(ix).await?;"
+                    ));
+                }
+                stmts
+            }
+        }
+        MigrationOp::DropField { model, field } => {
+            let tbl = table_name(model);
+            vec![format!(
+                "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .drop_column(\"{field}\")\n                .to_owned()\n        ).await?;"
+            )]
+        }
+        MigrationOp::AlterField {
+            model,
+            field,
+            new_ty,
+            nullable,
+            uniq,
+        } => {
+            let tbl = table_name(model);
+            if new_ty.contains('.') {
+                vec![format!(
+                    "        // alter field '{field}' is a reference; type change not emitted (backend-specific)"
+                )]
+            } else {
+                vec![format!(
+                    "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .modify_column({})\n                .to_owned()\n        ).await?;",
+                    seaorm_column_for(field, new_ty, *nullable, *uniq)
+                )]
+            }
+        }
+        MigrationOp::DropModel { model } => {
+            let tbl = table_name(model);
+            vec![format!(
+                "        manager.drop_table(\n            Table::drop()\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
+            )]
+        }
+        MigrationOp::CreateView { view } => {
+            vec![format!(
+                "        // create view `{}` is applied via raw SQL (CREATE VIEW)",
+                view
+            )]
+        }
+        MigrationOp::DropView { view } => {
+            vec![format!(
+                "        // drop view `{}` is applied via raw SQL (DROP VIEW)",
+                view
+            )]
+        }
+        MigrationOp::SeedData { model } => {
+            // Seed inserts are emitted as raw SQL INSERTs in the generated
+            // migration (non-destructive; applied on up only).
+            vec![format!(
+                "        // seed data for `{model}` is applied via raw SQL (INSERT)",
+                model = model
+            )]
+        }
+    }
+}
+
+fn pk_column(ty: &str, name: &str) -> String {
+    match ty {
+        "int" => "pk_auto(\"id\")".to_string(),
+        "bigint" => "big_pk_auto(\"id\")".to_string(),
+        "uuid" => format!("pk_uuid(\"{name}\")"),
+        _ => format!("string(\"{name}\").primary_key()"),
+    }
+}
+
+fn referenced_pk_type(target: &Lockfile, ty: &str) -> String {
+    let (model, _col) = split_ref(ty);
+    target
+        .model_by_name(&model)
+        .and_then(|m| {
+            m.fields
+                .iter()
+                .find(|f| f.intents.iter().any(|x| x == "-pk"))
+        })
+        .map(|f| f.ty.clone())
+        .unwrap_or_else(|| "string".to_string())
+}
+
+fn split_ref(ty: &str) -> (String, String) {
+    match ty.split_once('.') {
+        Some((m, c)) => (m.to_string(), c.to_string()),
+        None => (ty.to_string(), "id".to_string()),
+    }
+}
+
+/// Map a stored `-ondelete`/`-onupdate` keyword into the SeaORM
+/// `ForeignKeyAction` constant string. An unspecified action falls back to
+/// `Cascade` to preserve the historic (pre-1.3) migration output byte-for-byte.
+fn fk_action_str(keyword: &Option<String>) -> &'static str {
+    match keyword.as_deref() {
+        Some(s) => odsl_core::types::FkAction::from_keyword(s)
+            .map(|a| a.to_sea_orm())
+            .unwrap_or("ForeignKeyAction::Cascade"),
+        None => "ForeignKeyAction::Cascade",
+    }
+}
+
+/// Build the `m{ts}_{slug}.rs` migration file contents (SeaQuery, no raw SQL).
+fn render_seaorm_migration(plan: &MigrationPlan, target: &Lockfile) -> String {
+    let mut up_lines: Vec<String> = Vec::new();
+    let mut down_lines: Vec<String> = Vec::new();
+    for op in &plan.ops {
+        for s in seaorm_up_stmt(op, target) {
+            up_lines.push(s);
+        }
+        // Down is the inverse in reverse order.
+        if let Some(d) = seaorm_down_stmt(op, target) {
+            down_lines.push(d);
+        }
+    }
+    if up_lines.is_empty() {
+        up_lines.push("        // no changes".to_string());
+    }
+    if down_lines.is_empty() {
+        down_lines.push("        // no changes".to_string());
+    }
+
+    format!(
+        r#"//! ODSL auto-generated SeaORM migration.
+//!
+//! Pure SeaQuery builders (no raw SQL) — portable across SQLite/Postgres/MySQL.
+use sea_orm_migration::prelude::*;
+use sea_orm_migration::schema::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {{
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {{
+{up}
+        Ok(())
+    }}
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {{
+{down}
+        Ok(())
+    }}
+}}
+"#,
+        up = up_lines.join("\n"),
+        down = down_lines.join("\n"),
+    )
+}
+
+/// Inverse SeaQuery statement for one op (down section).
+fn seaorm_down_stmt(op: &MigrationOp, target: &Lockfile) -> Option<String> {
+    use crate::naming::table_name;
+    match op {
+        MigrationOp::CreateModel { model } => {
+            let tbl = table_name(model);
+            // Drop any secondary indexes first, then the table.
+            let lm = target.model_by_name(model);
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(lm) = lm {
+                for f in &lm.fields {
+                    if f.intents.iter().any(|i| i == "-index")
+                        && !f.intents.iter().any(|i| i == "-pk")
+                    {
+                        lines.push(format!(
+                            "        manager.drop_index(\n            Index::drop()\n                .name(\"idx_{tbl}_{}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;",
+                            f.name
+                        ));
+                    }
+                }
+                // Model-level composite indexes.
+                for index in &lm.indexes {
+                    lines.push(format!(
+                        "        manager.drop_index(\n            Index::drop()\n                .name(\"{name}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;",
+                        name = index.name
+                    ));
+                }
+            }
+            lines.push(format!(
+                "        manager.drop_table(\n            Table::drop()\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
+            ));
+            Some(lines.join("\n"))
+        }
+        MigrationOp::AddField { model, field, .. } => {
+            let tbl = table_name(model);
+            let wants_index = target
+                .model_by_name(model)
+                .and_then(|m| m.fields.iter().find(|f| f.name == *field))
+                .map(|f| f.intents.iter().any(|i| i == "-index"))
+                .unwrap_or(false);
+            let mut lines = vec![format!(
+                "        manager.alter_table(\n            Table::alter()\n                .table(\"{tbl}\")\n                .drop_column(\"{field}\")\n                .to_owned()\n        ).await?;"
+            )];
+            if wants_index {
+                lines.push(format!(
+                    "        manager.drop_index(\n            Index::drop()\n                .name(\"idx_{tbl}_{field}\")\n                .table(\"{tbl}\")\n                .to_owned()\n        ).await?;"
+                ));
+            }
+            Some(lines.join("\n"))
+        }
+        MigrationOp::DropField { .. } => None,
+        MigrationOp::AlterField { .. } => {
+            Some("        // alter field rollback is backend-specific; supply manually".to_string())
+        }
+        MigrationOp::DropModel { .. } => None,
+        MigrationOp::CreateView { .. } => None,
+        MigrationOp::DropView { .. } => None,
+        // Seed data has no down statement: the down migration must not delete
+        // data that was inserted during `up`.
+        MigrationOp::SeedData { .. } => None,
+    }
+}
+
+/// `Cargo.toml` for the generated `migration/` crate.
+fn migration_cargo_toml() -> String {
+    r#"[package]
+name = "migration"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dependencies.sea-orm-migration]
+version = "2.0"
+features = [
+    "runtime-tokio-native-tls",
+    "sqlx-sqlite",
+    "with-chrono",
+    "with-uuid",
+    "with-json",
+]
+"#
+    .to_string()
+}
+
+/// `src/lib.rs` for the generated `migration/` crate (the `Migrator`).
+fn migration_lib(mod_names: &[String]) -> String {
+    let mut mods = String::new();
+    let mut boxes = String::new();
+    for m in mod_names {
+        mods.push_str(&format!("mod {m};\n"));
+        boxes.push_str(&format!("            Box::new({m}::Migration),\n"));
+    }
+    format!(
+        r#"pub use sea_orm_migration::*;
+
+{mods}
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {{
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {{
+        vec![
+{boxes}        ]
+    }}
+}}
+"#,
+        mods = mods,
+        boxes = boxes,
+    )
+}
+
+/// `src/main.rs` for the generated `migration/` crate (the migrator CLI).
+fn migration_main() -> String {
+    r#"use migration::Migrator;
+use sea_orm_migration::prelude::*;
+
+#[tokio::main]
+async fn main() {
+    cli::run_cli(Migrator).await;
+}
+"#
+    .to_string()
+}
+
+/// Render and write a migration into `dir` (created if missing).
+///
+/// * `Sql` -> a single `<ts>_<slug>.sql` file.
+/// * `SeaOrm` -> a full `migration/` crate (Cargo.toml, src/lib.rs, src/main.rs,
+///   and `src/m<ts>_<slug>.rs`), accumulating into any existing `migration/`.
+///
+/// Returns the primary written file's relative path (the `.sql` or the crate's
+/// migration module). Writes nothing (and returns `None`) when the plan is
+/// empty, so re-running on an unchanged schema produces no file.
+pub fn write_migration(
+    dir: &Path,
+    format: MigrationFormat,
+    dialect: SqlDialect,
+    plan: &MigrationPlan,
+    target: &Lockfile,
+    current: Option<&Lockfile>,
+) -> std::io::Result<Option<String>> {
+    if plan.ops.is_empty() {
+        return Ok(None);
+    }
+    match format {
+        MigrationFormat::Sql => {
+            std::fs::create_dir_all(dir)?;
+            let rendered = render_migration(dialect, plan, target, current);
+            let path = dir.join(&rendered.file_name);
+            std::fs::write(&path, rendered.contents)?;
+            Ok(Some(rendered.file_name))
+        }
+        MigrationFormat::SeaOrm => {
+            let mdir = dir.join("migration");
+            std::fs::create_dir_all(mdir.join("src"))?;
+            // Accumulate existing migration modules (excluding the one we write now).
+            let slug = slugify(plan);
+            let new_mod = migration_timestamp_name(&slug);
+            let mut mods: Vec<String> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(mdir.join("src")) {
+                for e in entries.flatten() {
+                    let fname = e.file_name().to_string_lossy().to_string();
+                    let stem = fname.strip_prefix("m").and_then(|s| s.strip_suffix(".rs"));
+                    if let Some(stem) =
+                        stem.filter(|_| fname.starts_with('m') && fname != format!("{new_mod}.rs"))
+                    {
+                        mods.push(stem.to_string());
+                    }
+                }
+            }
+            mods.push(new_mod.clone());
+            mods.sort();
+
+            std::fs::write(mdir.join("Cargo.toml"), migration_cargo_toml())?;
+            std::fs::write(mdir.join("src").join("lib.rs"), migration_lib(&mods))?;
+            std::fs::write(mdir.join("src").join("main.rs"), migration_main())?;
+            std::fs::write(
+                mdir.join("src").join(format!("{new_mod}.rs")),
+                render_seaorm_migration(plan, target),
+            )?;
+            Ok(Some(format!("migration/src/{new_mod}.rs")))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use odsl_core::LockModel;
+    use odsl_core::lockfile::lock_field;
+
+    fn lf() -> Lockfile {
+        Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                ],
+                indexes: vec![],
+                primary_key: vec![],
+            }],
+            views: vec![],
+        }
+    }
+
+    fn plan() -> MigrationPlan {
+        MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "User".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn sql_file_has_up_and_down() {
+        let out = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
+        assert!(out.file_name.ends_with(".sql"));
+        assert!(out.contents.contains("-- up"));
+        assert!(out.contents.contains("-- down"));
+        assert!(out.contents.contains("CREATE TABLE"));
+        assert!(out.contents.contains("DROP TABLE"));
+    }
+
+    #[test]
+    fn slug_is_stable() {
+        let a = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
+        let b = render_migration(SqlDialect::Sqlite, &plan(), &lf(), None);
+        let suffix = |s: &str| s.rsplit_once('_').map(|(_, r)| r.to_string()).unwrap();
+        assert_eq!(suffix(&a.file_name), suffix(&b.file_name));
+        assert!(a.file_name.ends_with("create_user.sql"));
+    }
+
+    #[test]
+    fn seaorm_migration_uses_seaquery_not_raw_sql() {
+        // CreateModel User -> uses schema::* helpers, NOT execute_unprepared.
+        let out = render_seaorm_migration(&plan(), &lf());
+        assert!(out.contains("use sea_orm_migration::schema::*"));
+        assert!(out.contains("Table::create()"));
+        assert!(out.contains("pk_uuid(\"id\")"));
+        assert!(out.contains("string_uniq(\"email\")"));
+        assert!(!out.contains("execute_unprepared"));
+        assert!(!out.contains("CREATE TABLE"));
+    }
+
+    #[test]
+    fn seaorm_migration_emits_foreign_key() {
+        let target = Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![
+                LockModel {
+                    name: "User".into(),
+                    fields: vec![lock_field("id", "uuid", &["-pk"])],
+                    indexes: vec![],
+                    primary_key: vec![],
+                },
+                LockModel {
+                    name: "Post".into(),
+                    fields: vec![
+                        lock_field("id", "uuid", &["-pk"]),
+                        lock_field("author", "User.id", &[]),
+                    ],
+                    indexes: vec![],
+                    primary_key: vec![],
+                },
+            ],
+            views: vec![],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "Post".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(out.contains("ForeignKey::create()"));
+        assert!(out.contains(".from(\"posts\", \"author\")"));
+        assert!(out.contains(".to(\"users\", \"id\")"));
+        assert!(!out.contains("execute_unprepared"));
+    }
+
+    #[test]
+    fn seaorm_migration_respects_on_delete_action() {
+        // A FK field carrying `-ondelete setnull` must render the matching
+        // SeaORM ForeignKeyAction, not the historic hard-coded Cascade.
+        let target = Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![
+                LockModel {
+                    name: "User".into(),
+                    fields: vec![lock_field("id", "uuid", &["-pk"])],
+                    indexes: vec![],
+                    primary_key: vec![],
+                },
+                LockModel {
+                    name: "Post".into(),
+                    fields: vec![
+                        lock_field("id", "uuid", &["-pk"]),
+                        odsl_core::ast::LockField {
+                            name: "author".into(),
+                            ty: "User.id".into(),
+                            intents: vec![],
+                            enum_variants: vec![],
+                            default_value: None,
+                            m2m_target: None,
+                            check_expr: None,
+                            polymorphic_targets: vec![],
+                            on_delete: Some("setnull".into()),
+                            on_update: Some("restrict".into()),
+                            numeric_precision: None,
+                            numeric_scale: None,
+                            through_model: None,
+                        },
+                    ],
+                    indexes: vec![],
+                    primary_key: vec![],
+                },
+            ],
+            views: vec![],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "Post".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(out.contains("on_delete(ForeignKeyAction::SetNull)"));
+        assert!(out.contains("on_update(ForeignKeyAction::Restrict)"));
+        assert!(!out.contains("on_delete(ForeignKeyAction::Cascade)"));
+    }
+
+    #[test]
+    fn seaorm_migration_emits_composite_model_index() {
+        let target = Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![lock_field("id", "uuid", &["-pk"])],
+                indexes: vec![odsl_core::ast::LockIndex {
+                    name: "uniq_tenant_id_email".into(),
+                    fields: vec!["tenant_id".into(), "email".into()],
+                    unique: true,
+                    index_type: None,
+                    prefix_length: None,
+                    where_clause: None,
+                    order: None,
+                    nulls: None,
+                }],
+                primary_key: vec![],
+            }],
+            views: vec![],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "User".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        // Composite index via SeaQuery Index::create() with multiple .col().
+        assert!(out.contains("Index::create()"));
+        assert!(out.contains("uniq_tenant_id_email"));
+        assert!(out.contains(".col(\"tenant_id\")"));
+        assert!(out.contains(".col(\"email\")"));
+        assert!(out.contains(".unique()"));
+        assert!(out.contains("manager.create_index("));
+        // Down drops it via Index::drop().
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
+    fn seaorm_migration_emits_secondary_index() {
+        let target = Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                    lock_field("name", "string", &["-index"]),
+                ],
+                indexes: vec![],
+                primary_key: vec![],
+            }],
+            views: vec![],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::CreateModel {
+                model: "User".into(),
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        // Index created via SeaQuery Index::create() (not raw SQL).
+        assert!(out.contains("Index::create()"));
+        assert!(out.contains("idx_users_name"));
+        assert!(out.contains("manager.create_index("));
+        assert!(!out.contains("execute_unprepared"));
+        // Down drops the index via Index::drop().
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
+    fn seaorm_addfield_emits_secondary_index() {
+        let target = Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("name", "string", &["-index"]),
+                ],
+                indexes: vec![],
+                primary_key: vec![],
+            }],
+            views: vec![],
+        };
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::AddField {
+                model: "User".into(),
+                field: "name".into(),
+                ty: "string".into(),
+                nullable: false,
+                uniq: false,
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(
+            out.contains("Index::create()"),
+            "up missing index create:\n{out}"
+        );
+        assert!(out.contains("idx_users_name"));
+        assert!(out.contains("manager.create_index("));
+        assert!(out.contains("Index::drop()"));
+        assert!(out.contains("manager.drop_index("));
+    }
+
+    #[test]
+    fn cli_style_addfield_index_via_from_ast() {
+        // Mirrors cmd_migrate_create: parse -> Lockfile::from_ast -> render.
+        let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
+        let ast = odsl_parser::parse(src).unwrap();
+        odsl_core::Validator::validate(&ast, Some(odsl_core::Target::SeaOrmSqlite)).unwrap();
+        let target = Lockfile::from_ast(&ast);
+        // Sanity: the parsed target carries -index on name.
+        let name_intents = target
+            .model_by_name("User")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "name")
+            .unwrap()
+            .intents
+            .clone();
+        assert!(
+            name_intents.iter().any(|i| i == "-index"),
+            "target intents for name: {name_intents:?}"
+        );
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::AddField {
+                model: "User".into(),
+                field: "name".into(),
+                ty: "string".into(),
+                nullable: false,
+                uniq: false,
+            }],
+        };
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(
+            out.contains("Index::create()"),
+            "up missing index (from_ast path):\n{out}"
+        );
+        assert!(out.contains("idx_users_name"));
+    }
+
+    #[test]
+    fn cli_style_full_pipeline_index() {
+        // Full cmd_migrate_create path: parse -> plan_migration(empty, ast) -> render.
+        let src = "User\n  id uuid -pk\n  email string -uniq\n  name string -index\n";
+        let ast = odsl_parser::parse(src).unwrap();
+        odsl_core::Validator::validate(&ast, Some(odsl_core::Target::SeaOrmSqlite)).unwrap();
+        let current = Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![],
+            views: vec![],
+        };
+        let plan = odsl_migrator::plan_migration(&current, &ast).unwrap();
+        let target = Lockfile::from_ast(&ast);
+        let out = render_seaorm_migration(&plan, &target);
+        assert!(
+            out.contains("Index::create()") && out.contains("idx_users_name"),
+            "full pipeline missing index:\n{out}"
+        );
+    }
+
+    #[test]
+    fn empty_plan_writes_nothing() {
+        let empty = MigrationPlan { ops: vec![] };
+        let out = render_migration(SqlDialect::Sqlite, &empty, &lf(), None);
+        assert!(out.contents.contains("(no changes)"));
+    }
+
+    /// A `current` lockfile that still has the `age` column and the `User` model,
+    /// used to exercise down-of-drop / down-of-alter rollback rendering.
+    fn current_with_age() -> Lockfile {
+        Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                    lock_field("age", "int", &[]),
+                ],
+                indexes: vec![],
+                primary_key: vec![],
+            }],
+            views: vec![],
+        }
+    }
+
+    fn target_with_age_bigint() -> Lockfile {
+        Lockfile {
+            seeds: vec![],
+            version: Lockfile::VERSION,
+            checksum: String::new(),
+            models: vec![LockModel {
+                name: "User".into(),
+                fields: vec![
+                    lock_field("id", "uuid", &["-pk"]),
+                    lock_field("email", "string", &["-uniq"]),
+                    lock_field("age", "bigint", &[]),
+                ],
+                indexes: vec![],
+                primary_key: vec![],
+            }],
+            views: vec![],
+        }
+    }
+
+    #[test]
+    fn down_of_drop_field_readds_column() {
+        // Down of dropping a column must re-add it (from the prior lockfile),
+        // not silently emit nothing.
+        let current = current_with_age();
+        let target = target_with_age_bigint(); // age still present in target
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::DropField {
+                model: "User".into(),
+                field: "age".into(),
+            }],
+        };
+        let down = render_down_sql(SqlDialect::Postgres, &plan, &target, Some(&current));
+        let sql = down
+            .first()
+            .expect("down should produce one inverse statement");
+        assert!(
+            !sql.starts_with("-- "),
+            "down of DropField must be real DDL, got comment: {sql}"
+        );
+        assert!(
+            sql.contains("age"),
+            "down of DropField must mention the column: {sql}"
+        );
+    }
+
+    #[test]
+    fn down_of_alter_field_restores_prior_type() {
+        // Down of an ALTER that changed `int` -> `bigint` must restore `int`.
+        let current = current_with_age(); // age: int (prior)
+        let target = target_with_age_bigint(); // age: bigint (after)
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::AlterField {
+                model: "User".into(),
+                field: "age".into(),
+                new_ty: "bigint".into(),
+                nullable: true,
+                uniq: false,
+            }],
+        };
+        let down = render_down_sql(SqlDialect::Postgres, &plan, &target, Some(&current));
+        let sql = down
+            .first()
+            .expect("down should produce one inverse statement");
+        assert!(
+            sql.contains("TYPE INTEGER"),
+            "down of AlterField must restore the prior type: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn down_of_drop_model_recreates_table() {
+        // Down of dropping a model must recreate it from the prior lockfile.
+        let current = current_with_age();
+        let target = lf(); // model still present in target
+        let plan = MigrationPlan {
+            ops: vec![MigrationOp::DropModel {
+                model: "User".into(),
+            }],
+        };
+        let down = render_down_sql(SqlDialect::Postgres, &plan, &target, Some(&current));
+        let sql = down
+            .first()
+            .expect("down should produce one inverse statement");
+        assert!(
+            sql.contains("CREATE TABLE"),
+            "down of DropModel must recreate the table: {}",
+            sql
+        );
+    }
+}

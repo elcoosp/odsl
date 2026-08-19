@@ -2,8 +2,8 @@
 
 ## Supported Versions
 
-OSDL is pre-1.0. Security fixes are applied to the latest `main` and released in
-the next minor. The `osdl.lock` format follows semver: a breaking change to the
+ODSL is pre-1.0. Security fixes are applied to the latest `main` and released in
+the next minor. The `odsl.lock` format follows semver: a breaking change to the
 lockfile format requires a MAJOR release.
 
 ## Reporting a Vulnerability
@@ -13,7 +13,7 @@ Email the maintainers or use GitHub Security Advisories for this repository.
 Include:
 
 - A description of the vulnerability and its impact.
-- Steps to reproduce (a minimal `.osdl` and command, if applicable).
+- Steps to reproduce (a minimal `.odsl` and command, if applicable).
 - Suggested mitigation, if known.
 
 We aim to acknowledge within 72 hours and provide a remediation plan within 14

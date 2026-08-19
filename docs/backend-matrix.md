@@ -1,8 +1,8 @@
 # Backend Support Matrix
 
-This document is the canonical reference for which OSDL intent flags each
+This document is the canonical reference for which ODSL intent flags each
 code-generation target supports natively. It is generated from the
-`target_supports` function in `crates/osdl-core/src/validator.rs` — if you change
+`target_supports` function in `crates/odsl-core/src/validator.rs` — if you change
 support there, update this table to match.
 
 Legend: ✅ supported natively · ❌ not supported (compiler fails fast with a
@@ -52,13 +52,13 @@ object).
 
 | Target | Crate |
 |--------|-------|
-| seaorm-sqlite / -postgres / -mysql | `osdl-codegen-seaorm` |
-| mongo | `osdl-codegen-mongo` |
-| typescript | `osdl-codegen-typescript` |
-| graphql | `osdl-codegen-graphql` |
-| openapi | `osdl-codegen-openapi` |
-| json-schema | `osdl-codegen-jsonschema` |
-| zod / valibot / typebox | `osdl-codegen-ts-validators` |
-| trpc | `osdl-codegen-trpc` |
-| erd (mermaid / dbml) | `osdl-codegen-erd` |
-| prisma / drizzle (interop) | `osdl-codegen-prisma` / `osdl-codegen-drizzle` |
+| seaorm-sqlite / -postgres / -mysql | `odsl-codegen-seaorm` |
+| mongo | `odsl-codegen-mongo` |
+| typescript | `odsl-codegen-typescript` |
+| graphql | `odsl-codegen-graphql` |
+| openapi | `odsl-codegen-openapi` |
+| json-schema | `odsl-codegen-jsonschema` |
+| zod / valibot / typebox | `odsl-codegen-ts-validators` |
+| trpc | `odsl-codegen-trpc` |
+| erd (mermaid / dbml) | `odsl-codegen-erd` |
+| prisma / drizzle (interop) | `odsl-codegen-prisma` / `odsl-codegen-drizzle` |

@@ -5,6 +5,6 @@
 .DS_Store
 *.swp
 
-# Transpiler output (osdl build --out)
+# Transpiler output (odsl build --out)
 /generated
 /src/generated

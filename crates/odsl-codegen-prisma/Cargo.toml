@@ -1,0 +1,15 @@
+[package]
+name = "odsl-codegen-prisma"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+odsl-core = { workspace = true }
+odsl-parser = { workspace = true }
+la-arena = { workspace = true }
+
+[dev-dependencies]
+odsl-core = { workspace = true }
+odsl-parser = { workspace = true }

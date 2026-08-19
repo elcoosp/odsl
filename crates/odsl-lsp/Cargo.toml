@@ -1,0 +1,20 @@
+[package]
+name = "odsl-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-lsp = { workspace = true }
+async-io = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+odsl-core = { workspace = true }
+odsl-parser = { workspace = true }
+
+[dev-dependencies]
+async-channel = { workspace = true }
+serde_json = { workspace = true }

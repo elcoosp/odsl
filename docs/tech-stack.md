@@ -1,4 +1,4 @@
-# OSDL Compiler – Tech Stack (Production‑Ready)
+# ODSL Compiler – Tech Stack (Production‑Ready)
 
 ## Overview
 
@@ -87,7 +87,7 @@ All dependencies are up‑to‑date with their latest **stable** releases.
 
 ```toml
 [package]
-name = "osdl"
+name = "odsl"
 version = "0.1.0"
 edition = "2024"
 

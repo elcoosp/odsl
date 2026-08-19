@@ -1,11 +1,11 @@
 # ADR-001: Use `pest` (PEG) for Parsing
 
 - **Status:** Accepted
-- **Context:** OSDL is an indentation-based DSL with no curly braces or
+- **Context:** ODSL is an indentation-based DSL with no curly braces or
   semicolons. We need a parser that is easy to read, easy to extend, and that
   fails gracefully on malformed input (never panics).
 - **Decision:** Parse with the `pest` PEG crate. The grammar lives in
-  `crates/osdl-parser/src/grammar.pest`; indentation is captured explicitly by an
+  `crates/odsl-parser/src/grammar.pest`; indentation is captured explicitly by an
   `indent` rule so it is not swallowed as implicit whitespace.
 - **Consequences:**
   - `+` Declarative grammar is easy to read and modify.

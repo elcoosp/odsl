@@ -1,46 +1,46 @@
-# OSDL — the Open Schema Definition Language
+# ODSL — the Open Schema Definition Language
 
-OSDL is a minimal, indentation-based schema language that compiles to
+ODSL is a minimal, indentation-based schema language that compiles to
 backend-native code: **SeaORM 2.0** entities (SQLite / Postgres / MySQL),
 **MongoDB** Serde structs + `$jsonSchema` validators, **TypeScript** interfaces
 (+ runtime validators: Zod / Valibot / TypeBox), **GraphQL** SDL, **OpenAPI**
 documents, **JSON Schema**, **tRPC** routers, and **Entity-Relationship
 diagrams**. It also produces deterministic lockfiles so schema migrations can
 be auto-diffed and reliably applied, and can round-trip to **Prisma Schema
-Language** via `osdl convert`.
+Language** via `odsl convert`.
 
-OSDL is the single source of truth for your schema — one file drives your
+ODSL is the single source of truth for your schema — one file drives your
 database, your API contract, and your frontend types.
 
 ## Workspace layout
 
 | Crate | Responsibility |
 |-------|----------------|
-| `osdl-core` | Shared AST, types, validation, `CodeRenderer` trait, lockfile contract |
-| `osdl-parser` | pest grammar + lexer + type inference + doc/deprecation capture |
-| `osdl-codegen` | `syn`/`quote`/`prettyplease` codegen helpers |
-| `osdl-codegen-seaorm` | SeaORM 2.0 dense-entity renderer (SQLite/Postgres/MySQL) |
-| `osdl-codegen-mongo` | MongoDB Serde + `$jsonSchema` renderer |
-| `osdl-codegen-typescript` | TypeScript interfaces + runtime validators |
-| `osdl-codegen-graphql` | GraphQL SDL (types, inputs, queries, mutations) |
-| `osdl-codegen-openapi` | OpenAPI 3 document renderer |
-| `osdl-codegen-json-schema` | JSON Schema (draft-07) document renderer |
-| `osdl-codegen-ts-validators` | Zod / Valibot / TypeBox validator renderers |
-| `osdl-codegen-trpc` | tRPC v10 routers (CRUD) over a Prisma-style `ctx.db` |
-| `osdl-codegen-erd` | Entity-Relationship diagram (Mermaid / PlantUML) renderer |
-| `osdl-codegen-prisma` | Prisma Schema Language interop (import/export) |
-| `osdl-migrator` | AST diff engine + lockfile I/O |
-| `osdl-adapter` | Live DB adapters: SeaORM (SQLite/Postgres/MySQL) + MongoDB |
-| `osdl-lsp` | Language Server Protocol server (diagnostics, hover, go-to-def) |
-| `osdl-mcp` | Model Context Protocol server for AI agents |
-| `osdl-cli` | `osdl` binary: `init`, `build`, `migrate`, `convert`, `fmt`, `lint`, `erd`, `pull`, `lsp`, `mcp` |
+| `odsl-core` | Shared AST, types, validation, `CodeRenderer` trait, lockfile contract |
+| `odsl-parser` | pest grammar + lexer + type inference + doc/deprecation capture |
+| `odsl-codegen` | `syn`/`quote`/`prettyplease` codegen helpers |
+| `odsl-codegen-seaorm` | SeaORM 2.0 dense-entity renderer (SQLite/Postgres/MySQL) |
+| `odsl-codegen-mongo` | MongoDB Serde + `$jsonSchema` renderer |
+| `odsl-codegen-typescript` | TypeScript interfaces + runtime validators |
+| `odsl-codegen-graphql` | GraphQL SDL (types, inputs, queries, mutations) |
+| `odsl-codegen-openapi` | OpenAPI 3 document renderer |
+| `odsl-codegen-json-schema` | JSON Schema (draft-07) document renderer |
+| `odsl-codegen-ts-validators` | Zod / Valibot / TypeBox validator renderers |
+| `odsl-codegen-trpc` | tRPC v10 routers (CRUD) over a Prisma-style `ctx.db` |
+| `odsl-codegen-erd` | Entity-Relationship diagram (Mermaid / PlantUML) renderer |
+| `odsl-codegen-prisma` | Prisma Schema Language interop (import/export) |
+| `odsl-migrator` | AST diff engine + lockfile I/O |
+| `odsl-adapter` | Live DB adapters: SeaORM (SQLite/Postgres/MySQL) + MongoDB |
+| `odsl-lsp` | Language Server Protocol server (diagnostics, hover, go-to-def) |
+| `odsl-mcp` | Model Context Protocol server for AI agents |
+| `odsl-cli` | `odsl` binary: `init`, `build`, `migrate`, `convert`, `fmt`, `lint`, `erd`, `pull`, `lsp`, `mcp` |
 
-## The OSDL surface syntax
+## The ODSL surface syntax
 
 Indentation is the only structural punctuation. A top-level (un-indented)
 line opens a model; every indented line adds a field.
 
-```osdl
+```odsl
 # comments start with '#'
 use user                       # module import (unquoted, ::-separated paths)
 use billing::invoice
@@ -67,11 +67,11 @@ Post
 ### Modules (`use`)
 
 Schemas can be split across files and composed with `use` declarations. Paths
-are unquoted and `::`-separated (Rust/zig style). `osdl build` resolves the
+are unquoted and `::`-separated (Rust/zig style). `odsl build` resolves the
 module graph into a single merged AST; the lockfile stores the SHA-256 of every
 source file so the merge is reproducible.
 
-```osdl
+```odsl
 use user
 use billing::invoice
 
@@ -87,7 +87,7 @@ Order
 (expanded to its base scalar + constraints) and, in backends that support it,
 can render as a newtype wrapper.
 
-```osdl
+```odsl
 type Email   = string -check "email ~ '^[^@]+@[^@]+$'"
 type Money   = bigint -check "value >= 0"
 
@@ -99,7 +99,7 @@ User
 
 ### Rich foreign-key semantics
 
-```osdl
+```odsl
 Post
   author User.id -ondelete cascade -onupdate restrict
 ```
@@ -152,57 +152,57 @@ If omitted, the migration defaults to `Cascade` to keep lockfile output stable.
 ## CLI
 
 ```bash
-# Scaffold a new schema.osdl + osdl.lock
-osdl init
+# Scaffold a new schema.odsl + odsl.lock
+odsl init
 
 # Build backend code (--target selects the renderer)
-osdl build --target seaorm-sqlite        # SeaORM entities (SQLite)
-osdl build --target seaorm-postgres      # SeaORM entities (Postgres)
-osdl build --target seaorm-mysql         # SeaORM entities (MySQL)
-osdl build --target mongo                # Mongo structs + jsonSchema
-osdl build --target typescript           # TS interfaces + runtime validators
-osdl build --target graphql              # GraphQL SDL
-osdl build --target openapi              # OpenAPI 3 document
-osdl build --target json-schema          # JSON Schema (draft-07)
-osdl build --target zod                  # Zod validators
-osdl build --target valibot              # Valibot validators
-osdl build --target typebox              # TypeBox validators
-osdl build --target trpc                 # tRPC v10 routers (per-model CRUD)
-osdl build --target erd                  # Entity-Relationship diagram (Mermaid)
-osdl build --watch                       # rebuild on change
+odsl build --target seaorm-sqlite        # SeaORM entities (SQLite)
+odsl build --target seaorm-postgres      # SeaORM entities (Postgres)
+odsl build --target seaorm-mysql         # SeaORM entities (MySQL)
+odsl build --target mongo                # Mongo structs + jsonSchema
+odsl build --target typescript           # TS interfaces + runtime validators
+odsl build --target graphql              # GraphQL SDL
+odsl build --target openapi              # OpenAPI 3 document
+odsl build --target json-schema          # JSON Schema (draft-07)
+odsl build --target zod                  # Zod validators
+odsl build --target valibot              # Valibot validators
+odsl build --target typebox              # TypeBox validators
+odsl build --target trpc                 # tRPC v10 routers (per-model CRUD)
+odsl build --target erd                  # Entity-Relationship diagram (Mermaid)
+odsl build --watch                       # rebuild on change
 
 # Interop with Prisma Schema Language
-osdl convert --direction to-prisma schema.osdl schema.prisma     # OSDL -> Prisma
-osdl convert --direction from-prisma schema.prisma schema.osdl    # Prisma -> OSDL
+odsl convert --direction to-prisma schema.odsl schema.prisma     # ODSL -> Prisma
+odsl convert --direction from-prisma schema.prisma schema.odsl    # Prisma -> ODSL
 
 # Lint the schema (configurable rules)
-osdl lint schema.osdl
+odsl lint schema.odsl
 
 # Render an Entity-Relationship diagram
-osdl erd schema.osdl --format mermaid          # Mermaid (default)
-osdl erd schema.osdl --format dbml > erd.dbml  # dbdiagram.io / DBML
+odsl erd schema.odsl --format mermaid          # Mermaid (default)
+odsl erd schema.odsl --format dbml > erd.dbml  # dbdiagram.io / DBML
 
-# Reverse-engineer a live database into schema.osdl
-osdl pull --db-url postgres://localhost/app
+# Reverse-engineer a live database into schema.odsl
+odsl pull --db-url postgres://localhost/app
 
-# Reformat an .osdl file in place (or stdin -> stdout)
-osdl fmt schema.osdl
+# Reformat an .odsl file in place (or stdin -> stdout)
+odsl fmt schema.odsl
 
-# Migrations (diff the schema against osdl.lock)
-osdl migrate plan                         # print the migration plan
-osdl migrate plan --apply                # print plan and update osdl.lock
-osdl migrate create --out migrations      # write migrations/<ts>_<slug>.sql
-osdl migrate create --sea-orm             # ...a full sea-orm-migration crate (no raw SQL)
-osdl migrate up --db-url sqlite:///app.db?mode=rwc     # apply to a live DB
-osdl migrate up --db-url postgres://localhost/app       # ...or Postgres
-osdl migrate up --db-url mongodb://localhost:27017/app # ...or MongoDB
-osdl migrate down --db-url ...            # roll back to the desired state
-osdl migrate status --db-url ...          # diff lockfile / DB / schema
-osdl migrate test --db-url sqlite:///app.db  # apply migrations on a throwaway DB to verify they run
+# Migrations (diff the schema against odsl.lock)
+odsl migrate plan                         # print the migration plan
+odsl migrate plan --apply                # print plan and update odsl.lock
+odsl migrate create --out migrations      # write migrations/<ts>_<slug>.sql
+odsl migrate create --sea-orm             # ...a full sea-orm-migration crate (no raw SQL)
+odsl migrate up --db-url sqlite:///app.db?mode=rwc     # apply to a live DB
+odsl migrate up --db-url postgres://localhost/app       # ...or Postgres
+odsl migrate up --db-url mongodb://localhost:27017/app # ...or MongoDB
+odsl migrate down --db-url ...            # roll back to the desired state
+odsl migrate status --db-url ...          # diff lockfile / DB / schema
+odsl migrate test --db-url sqlite:///app.db  # apply migrations on a throwaway DB to verify they run
 
 # Editor + agent integrations
-osdl lsp                                  # Language Server Protocol over stdio
-osdl mcp                                  # Model Context Protocol server over stdio
+odsl lsp                                  # Language Server Protocol over stdio
+odsl mcp                                  # Model Context Protocol server over stdio
 ```
 
 `migrate create` writes a migration file from the schema diff — a timestamped
@@ -210,8 +210,8 @@ osdl mcp                                  # Model Context Protocol server over s
 `up`/`down` Rust module. `migrate up` connects to the database named by
 `--db-url`, applies every op in the diff (CREATE/ALTER/DROP for SQL;
 `createCollection` / `collMod` validators for Mongo), then writes the new
-`osdl.lock`. Re-running is a no-op once the lockfile matches the schema.
-`osdl migrate test` applies the full migration history onto a throwaway
+`odsl.lock`. Re-running is a no-op once the lockfile matches the schema.
+`odsl migrate test` applies the full migration history onto a throwaway
 database to prove the generated DDL actually runs end-to-end before you ship it.
 
 ## Building & testing
@@ -229,14 +229,14 @@ cargo fmt  --all
   so generated code is guaranteed to parse. (Verified by compiling the
   generated SeaORM output against `sea-orm` 2.0.)
 * **Deterministic lockfiles** — two structurally-equal schemas produce
-  byte-identical `osdl.lock` files (sorted projection + SHA-256), which is
+  byte-identical `odsl.lock` files (sorted projection + SHA-256), which is
   what makes auto-migration reliable.
-* **Live execution** — `osdl-adapter` turns the backend-agnostic
+* **Live execution** — `odsl-adapter` turns the backend-agnostic
   `MigrationPlan` into real DDL: SeaORM `execute_unprepared` for SQLite/
   Postgres/MySQL, and MongoDB `createCollection`/`collMod` validators. Table
-  and collection names are shared with the renderers via `osdl_core::naming`,
+  and collection names are shared with the renderers via `odsl_core::naming`,
   so generated code and migrations always agree.
-* **Migration files** — `osdl migrate create` renders the same plan to
+* **Migration files** — `odsl migrate create` renders the same plan to
   timestamped `migrations/<ts>_<slug>.sql` (with `up`/`down` sections). With
   `--sea-orm` it scaffolds a **full `sea-orm-migration` crate** under
   `migrations/` (Cargo.toml, `src/lib.rs` `Migrator`, `src/main.rs` CLI, and one

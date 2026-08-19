@@ -1,15 +1,15 @@
 # Changelog
 
-All notable changes to OSDL are documented here. The format is based on
+All notable changes to ODSL are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/) and the project adheres to
-[Semantic Versioning](https://semver.org/). The lockfile format (`osdl.lock`)
+[Semantic Versioning](https://semver.org/). The lockfile format (`odsl.lock`)
 is part of the public contract: breaking it requires a MAJOR version bump and a
 migration guide.
 
 ## [Unreleased]
 
 ### Added
-- **MCP `lint` tool** — the `osdl-mcp` server now exposes a `lint` tool that runs
+- **MCP `lint` tool** — the `odsl-mcp` server now exposes a `lint` tool that runs
   the schema lint rules and returns structured findings (rule id, severity,
   message) so agents can fix them directly. (Previously advertised but missing.)
 - **MCP `migrate_preview` tool** — a read-only tool that diffs a schema against an
@@ -18,8 +18,8 @@ migration guide.
 - **`schema_matches_strict`** on `Ast` — like `schema_matches` but also compares
   column type keywords, so a silent type change (e.g. `int` → `bigint`) surfaces
   as drift instead of being masked by the structural-only comparison. Wired into
-  `osdl migrate test` as a non-fatal warning.
-- New `osdl lint`, `osdl erd`, and `osdl migrate test` commands documented in the
+  `odsl migrate test` as a non-fatal warning.
+- New `odsl lint`, `odsl erd`, and `odsl migrate test` commands documented in the
   README, plus DBML ERD output (`--format dbml`).
 
 ### Fixed

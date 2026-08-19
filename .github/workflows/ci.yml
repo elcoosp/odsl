@@ -60,7 +60,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # `--lib` runs every crate's unit tests, including the insta codegen
-      # snapshot assertions (e.g. osdl-codegen-seaorm). No live database needed.
+      # snapshot assertions (e.g. odsl-codegen-seaorm). No live database needed.
       - run: cargo test --workspace --lib
 
   integration:
@@ -74,7 +74,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run live adapter tests
-        run: cargo test -p osdl-adapter --test live_postgres_mongo
+        run: cargo test -p odsl-adapter --test live_postgres_mongo
 
   bench:
     name: Performance SLO gate (Parse→Validate→Render < 500ms)
@@ -86,7 +86,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Asserts REQ-NFR-PERF-001 / RTM R-04 (100 models < 500ms). Fails CI on
       # any regression.
-      - run: cargo test -p osdl-bench
+      - run: cargo test -p odsl-bench
 
   docs:
     name: Documentation existence

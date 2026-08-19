@@ -1,11 +1,11 @@
 # ADR-004: Deterministic Lockfiles & Auto-Diff Migrations
 
 - **Status:** Accepted
-- **Context:** OSDL must generate auto-diffing migrations (BR-003,
+- **Context:** ODSL must generate auto-diffing migrations (BR-003,
   REQ-FUNC-005) without a human writing `ALTER TABLE` by hand, and must produce
   byte-for-byte identical output across runs (REQ-NFR-DET-001).
 - **Decision:**
-  - A `osdl.lock` file is a deterministic serialization of the last compiled
+  - A `odsl.lock` file is a deterministic serialization of the last compiled
     `Ast` (stable field order, SHA256 checksum). It is the public contract:
     breaking its format requires a MAJOR version bump + migration guide.
   - `migrate create` diffs the current `Ast` against the lockfile's `Ast` and

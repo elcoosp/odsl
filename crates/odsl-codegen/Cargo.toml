@@ -1,0 +1,15 @@
+[package]
+name = "odsl-codegen"
+description = "Shared syn/quote/prettyplease code-generation helpers for ODSL"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+odsl-core.workspace = true
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+prettyplease.workspace = true

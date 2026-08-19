@@ -1,7 +1,7 @@
 # ADR-002: Use Arena Allocation for the AST
 
 - **Status:** Accepted
-- **Context:** OSDL models form cyclic graphs (e.g. `User` has `Post`, `Post`
+- **Context:** ODSL models form cyclic graphs (e.g. `User` has `Post`, `Post`
   has `User`). Rust's ownership model makes a naive tree of owned references
   impossible to mutate and traverse.
 - **Decision:** Represent the AST as an arena (`la-arena`) of `Model`/`Field`

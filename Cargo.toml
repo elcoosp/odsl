@@ -1,25 +1,25 @@
 [workspace]
 members = [
-    "crates/osdl-core",
-    "crates/osdl-parser",
-    "crates/osdl-codegen",
-    "crates/osdl-codegen-seaorm",
-    "crates/osdl-codegen-mongo",
-    "crates/osdl-codegen-typescript",
-    "crates/osdl-codegen-graphql",
-    "crates/osdl-codegen-openapi",
-    "crates/osdl-codegen-erd",
-    "crates/osdl-codegen-jsonschema",
-    "crates/osdl-codegen-ts-validators",
-    "crates/osdl-codegen-prisma",
-    "crates/osdl-codegen-drizzle",
-    "crates/osdl-codegen-trpc",
-    "crates/osdl-bench",
-    "crates/osdl-migrator",
-    "crates/osdl-adapter",
-    "crates/osdl-cli",
-    "crates/osdl-lsp",
-    "crates/osdl-mcp",
+    "crates/odsl-core",
+    "crates/odsl-parser",
+    "crates/odsl-codegen",
+    "crates/odsl-codegen-seaorm",
+    "crates/odsl-codegen-mongo",
+    "crates/odsl-codegen-typescript",
+    "crates/odsl-codegen-graphql",
+    "crates/odsl-codegen-openapi",
+    "crates/odsl-codegen-erd",
+    "crates/odsl-codegen-jsonschema",
+    "crates/odsl-codegen-ts-validators",
+    "crates/odsl-codegen-prisma",
+    "crates/odsl-codegen-drizzle",
+    "crates/odsl-codegen-trpc",
+    "crates/odsl-bench",
+    "crates/odsl-migrator",
+    "crates/odsl-adapter",
+    "crates/odsl-cli",
+    "crates/odsl-lsp",
+    "crates/odsl-mcp",
 ]
 resolver = "2"
 
@@ -27,8 +27,8 @@ resolver = "2"
 edition = "2024"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
-authors = ["OSDL Contributors"]
-repository = "https://github.com/example/osdl"
+authors = ["ODSL Contributors"]
+repository = "https://github.com/example/odsl"
 rust-version = "1.85"
 
 [workspace.dependencies]
@@ -73,31 +73,31 @@ insta = "1.48.0"
 proptest = "1.11.0"
 criterion = "0.8.2"
 
-# LSP / async companions (literal pins in osdl-lsp)
+# LSP / async companions (literal pins in odsl-lsp)
 async-io = "2.6.0"
 futures = "0.3.34"
 async-channel = "2.5.0"
 
-# Integration test harness (osdl-adapter dev-deps)
+# Integration test harness (odsl-adapter dev-deps)
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres", "mongo"] }
 
 # Internal crates
-osdl-core = { path = "crates/osdl-core" }
-osdl-parser = { path = "crates/osdl-parser" }
-osdl-codegen = { path = "crates/osdl-codegen" }
-osdl-codegen-seaorm = { path = "crates/osdl-codegen-seaorm" }
-osdl-codegen-mongo = { path = "crates/osdl-codegen-mongo" }
-osdl-codegen-typescript = { path = "crates/osdl-codegen-typescript" }
-osdl-codegen-graphql = { path = "crates/osdl-codegen-graphql" }
-osdl-codegen-openapi = { path = "crates/osdl-codegen-openapi" }
-osdl-codegen-erd = { path = "crates/osdl-codegen-erd" }
-osdl-codegen-jsonschema = { path = "crates/osdl-codegen-jsonschema" }
-osdl-codegen-ts-validators = { path = "crates/osdl-codegen-ts-validators" }
-osdl-codegen-prisma = { path = "crates/osdl-codegen-prisma" }
-osdl-codegen-drizzle = { path = "crates/osdl-codegen-drizzle" }
-osdl-codegen-trpc = { path = "crates/osdl-codegen-trpc" }
-osdl-migrator = { path = "crates/osdl-migrator" }
-osdl-adapter = { path = "crates/osdl-adapter" }
-osdl-lsp = { path = "crates/osdl-lsp" }
-osdl-mcp = { path = "crates/osdl-mcp" }
+odsl-core = { path = "crates/odsl-core" }
+odsl-parser = { path = "crates/odsl-parser" }
+odsl-codegen = { path = "crates/odsl-codegen" }
+odsl-codegen-seaorm = { path = "crates/odsl-codegen-seaorm" }
+odsl-codegen-mongo = { path = "crates/odsl-codegen-mongo" }
+odsl-codegen-typescript = { path = "crates/odsl-codegen-typescript" }
+odsl-codegen-graphql = { path = "crates/odsl-codegen-graphql" }
+odsl-codegen-openapi = { path = "crates/odsl-codegen-openapi" }
+odsl-codegen-erd = { path = "crates/odsl-codegen-erd" }
+odsl-codegen-jsonschema = { path = "crates/odsl-codegen-jsonschema" }
+odsl-codegen-ts-validators = { path = "crates/odsl-codegen-ts-validators" }
+odsl-codegen-prisma = { path = "crates/odsl-codegen-prisma" }
+odsl-codegen-drizzle = { path = "crates/odsl-codegen-drizzle" }
+odsl-codegen-trpc = { path = "crates/odsl-codegen-trpc" }
+odsl-migrator = { path = "crates/odsl-migrator" }
+odsl-adapter = { path = "crates/odsl-adapter" }
+odsl-lsp = { path = "crates/odsl-lsp" }
+odsl-mcp = { path = "crates/odsl-mcp" }

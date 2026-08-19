@@ -2,7 +2,7 @@
 
 - Status: Draft | Accepted | Rejected | Superseded
 - Date: YYYY-MM-DD
-- Affects: (e.g. `osdl-core`, `osdl-adapter`, `osdl.lock` format)
+- Affects: (e.g. `odsl-core`, `odsl-adapter`, `odsl.lock` format)
 
 ## Context
 

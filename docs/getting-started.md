@@ -6,25 +6,25 @@ about five minutes.
 ## 1. Install
 
 ```sh
-cargo install --path crates/osdl-cli
+cargo install --path crates/odsl-cli
 ```
 
 Verify it works:
 
 ```sh
-osdl --help
+odsl --help
 ```
 
 ## 2. Create a schema
 
 ```sh
 mkdir my-app && cd my-app
-osdl init schema.osdl
+odsl init schema.odsl
 ```
 
-Edit `schema.osdl`:
+Edit `schema.odsl`:
 
-```osdl
+```odsl
 /// A user account.
 User
   id uuid -pk
@@ -44,22 +44,22 @@ Post
 ## 3. Validate and format
 
 ```sh
-osdl lint schema.osdl          # run the schema-quality linter
-osdl fmt schema.osdl           # canonicalise the file in place
+odsl lint schema.odsl          # run the schema-quality linter
+odsl fmt schema.odsl           # canonicalise the file in place
 ```
 
 ## 4. Generate code
 
 ```sh
 # Rust entities (SeaORM) for Postgres
-osdl build --target seaorm-postgres --out generated/
+odsl build --target seaorm-postgres --out generated/
 
 # TypeScript types + Zod validators
-osdl build --target typescript --out generated/
-osdl build --target zod --out generated/
+odsl build --target typescript --out generated/
+odsl build --target zod --out generated/
 
 # A tRPC router wired to a Prisma-style ctx.db
-osdl build --target trpc --out generated/
+odsl build --target trpc --out generated/
 ```
 
 ## 5. Run a migration
@@ -67,19 +67,19 @@ osdl build --target trpc --out generated/
 ```sh
 # Apply directly against a database
 export DB_URL=postgres://localhost/myapp
-osdl migrate create schema.osdl --db-url $DB_URL
-osdl migrate up --db-url $DB_URL
+odsl migrate create schema.odsl --db-url $DB_URL
+odsl migrate up --db-url $DB_URL
 
 # Or verify the migration is correct on a throwaway DB first
-osdl migrate test --db-url sqlite:///test.db
+odsl migrate test --db-url sqlite:///test.db
 ```
 
 ## 6. Use it from an agent (MCP)
 
-Point any MCP-capable agent at the `osdl` binary:
+Point any MCP-capable agent at the `odsl` binary:
 
 ```sh
-osdl mcp
+odsl mcp
 ```
 
 The server exposes `read_schema`, `validate_schema`, `format_schema`, `build`,

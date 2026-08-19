@@ -1,0 +1,43 @@
+[package]
+name = "odsl-cli"
+description = "The ODSL compiler CLI (init, build, migrate)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "odsl"
+path = "src/main.rs"
+
+[dependencies]
+odsl-core.workspace = true
+odsl-parser.workspace = true
+odsl-codegen.workspace = true
+odsl-codegen-seaorm.workspace = true
+odsl-codegen-mongo.workspace = true
+odsl-codegen-typescript.workspace = true
+odsl-codegen-graphql.workspace = true
+odsl-codegen-openapi.workspace = true
+odsl-codegen-erd.workspace = true
+odsl-codegen-jsonschema.workspace = true
+odsl-codegen-ts-validators.workspace = true
+odsl-codegen-prisma.workspace = true
+odsl-codegen-drizzle.workspace = true
+odsl-codegen-trpc.workspace = true
+odsl-migrator.workspace = true
+odsl-adapter.workspace = true
+odsl-lsp.workspace = true
+odsl-mcp.workspace = true
+
+clap.workspace = true
+miette.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+notify.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

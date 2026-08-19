@@ -1,0 +1,29 @@
+[package]
+name = "odsl-adapter"
+description = "Live database adapters that execute ODSL migration plans"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+odsl-core.workspace = true
+odsl-migrator.workspace = true
+sea-orm.workspace = true
+mongodb.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+odsl-core.workspace = true
+odsl-migrator.workspace = true
+odsl-parser.workspace = true
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }

@@ -1,6 +1,6 @@
 # RFC Process
 
-Major changes to OSDL — new syntax, new backends, lockfile-format changes, or
+Major changes to ODSL — new syntax, new backends, lockfile-format changes, or
 anything that affects the public contract — go through the RFC process before
 implementation.
 
