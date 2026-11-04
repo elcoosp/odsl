@@ -8,6 +8,10 @@
 
 use std::path::Path;
 
+/// Re-exported from [`odsl_core::naming`] (the single source of truth for
+/// identifier naming) so existing `use odsl_codegen::to_pascal_case` callers
+/// keep working.
+pub use odsl_core::naming::to_pascal_case;
 /// Format a [`syn::File`] into a pretty, valid Rust source string.
 pub fn format_file(file: &syn::File) -> String {
     prettyplease::unparse(file)
@@ -31,24 +35,6 @@ pub fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
     std::fs::write(path, contents)
 }
 
-/// Turn a model/field name into a PascalCase identifier fragment.
-///
-/// ODSL model names are already PascalCase, but field names are `snake_case`;
-/// this helper is idempotent for either and is used when building struct /
-/// type identifiers.
-pub fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-', ' '])
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,7 +43,7 @@ mod tests {
     fn pascal_case_idempotent() {
         assert_eq!(to_pascal_case("UserProfile"), "UserProfile");
         assert_eq!(to_pascal_case("user_profile"), "UserProfile");
-        assert_eq!(to_pascal_case_helper("created_at"), "CreatedAt");
+        assert_eq!(to_pascal_case("created_at"), "CreatedAt");
     }
 
     #[test]
@@ -77,9 +63,5 @@ mod tests {
         write_file(&path, "pub struct X;").unwrap();
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("odsl_codegen_test"));
-    }
-
-    fn to_pascal_case_helper(s: &str) -> String {
-        to_pascal_case(s)
     }
 }
