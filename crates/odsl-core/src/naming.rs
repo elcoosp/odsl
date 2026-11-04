@@ -52,6 +52,31 @@ pub fn to_snake_plural(s: &str) -> String {
     }
 }
 
+/// Turn a `snake_case` / `PascalCase` name into a `PascalCase` identifier
+/// fragment: `status` -> `Status`, `order_status` -> `OrderStatus`.
+///
+/// The operation is idempotent (`UserProfile` stays `UserProfile`). An empty
+/// input yields `"X"` so the result is always a valid identifier when used to
+/// build Rust/TS type names.
+pub fn to_pascal_case(s: &str) -> String {
+    let mut out: String = s
+        .split(['_', '-', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        // Preserve the identifier guarantee for empty / separator-only input.
+        out.push('X');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +97,14 @@ mod tests {
         assert_eq!(to_snake_plural("Category"), "categories");
         assert_eq!(to_snake_plural("Box"), "boxes");
         assert_eq!(to_snake_plural("Bus"), "buses");
+    }
+
+    #[test]
+    fn pascal_cases_and_is_idempotent() {
+        assert_eq!(to_pascal_case("status"), "Status");
+        assert_eq!(to_pascal_case("order_status"), "OrderStatus");
+        assert_eq!(to_pascal_case("UserProfile"), "UserProfile");
+        // Always yields a usable identifier.
+        assert_eq!(to_pascal_case(""), "X");
     }
 }
