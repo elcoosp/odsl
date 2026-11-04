@@ -28,6 +28,20 @@ pub struct Lockfile {
 impl Lockfile {
     pub const VERSION: u32 = 1;
 
+    /// The empty lockfile: no models, views or seeds, no checksum.
+    ///
+    /// Used as the baseline when no `odsl.lock` exists yet (first `migrate`)
+    /// and as the expected end-state after a full `migrate down`.
+    pub fn empty() -> Self {
+        Self {
+            version: Self::VERSION,
+            checksum: String::new(),
+            models: vec![],
+            views: vec![],
+            seeds: vec![],
+        }
+    }
+
     /// Build a lockfile from a validated AST.
     pub fn from_ast(ast: &Ast) -> Self {
         let models = ast.to_lock();
