@@ -8,31 +8,24 @@
 //!   * `migrate create` — write migration files (`migrations/*.sql` or SeaORM).
 //!   * `migrate up --db-url …` — apply the plan to a live database.
 //! * `lint`   — enforce the configurable schema-quality rule set.
+//!
+//! The command implementations live in focused modules: [`build`],
+//! [`convert`], [`migrate`], [`quality`], [`scaffold`] and the shared
+//! [`project`] helpers.
 
 #![allow(clippy::result_large_err)]
 
+mod build;
+mod convert;
+mod migrate;
+mod project;
+mod quality;
+mod scaffold;
+
 use clap::{Parser, Subcommand};
-use odsl_adapter::migrate::{MigrationFormat, write_migration};
-use odsl_adapter::sql::SqlDialect;
-use odsl_codegen_drizzle::{drizzle_to_odsl, render_drizzle};
-use odsl_codegen_erd::{ErdFormat, render as render_erd};
-use odsl_codegen_graphql::GraphQLRenderer;
-use odsl_codegen_jsonschema::JsonSchemaRenderer;
-use odsl_codegen_mongo::MongoRenderer;
-use odsl_codegen_openapi::OpenApiRenderer;
-use odsl_codegen_prisma::{prisma_to_odsl, render_prisma};
-use odsl_codegen_seaorm::SeaOrmRenderer;
-use odsl_codegen_trpc::TrpcRenderer;
-use odsl_codegen_ts_validators::{TsValidatorRenderer, ValidatorFlavor};
-use odsl_codegen_typescript::TypeScriptRenderer;
+use convert::ConvertDirection;
 use odsl_core::Target;
-use odsl_core::ast::Ast;
 use odsl_core::errors::OdslError;
-use odsl_core::lockfile::Lockfile;
-use odsl_core::validator::CodeRenderer;
-use odsl_migrator::{MigrationPlan, plan_migration, read_lockfile, write_lockfile};
-use odsl_parser::{parse, parse_project};
-use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -118,167 +111,129 @@ enum Command {
         /// Path to a `.odsl-lint.toml` config (defaults to one next to `input`).
         #[arg(long)]
         config: Option<std::path::PathBuf>,
-        /// Exit non-zero on warnings as well as errors.
+        /// Fail when any warning-severity finding is reported.
         #[arg(long)]
         deny_warnings: bool,
     },
-    /// Render an entity-relationship diagram (ERD) of the schema.
-    ///
-    /// Emits either a Mermaid `erDiagram` (Markdown-embeddable) or DBML
-    /// (dbdiagram.io compatible). Models become tables/nodes, scalar fields
-    /// become columns, and foreign-key references become relationship edges.
+    /// Render an entity-relationship diagram (Mermaid or DBML).
     Erd {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Diagram dialect: `mermaid` or `dbml`.
+        /// Diagram format: `mermaid` (default) or `dbml`.
         #[arg(long, default_value = "mermaid")]
         format: String,
-        /// Output file (defaults to stdout when omitted).
+        /// Write the diagram to this file instead of stdout.
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
-    /// Convert a schema to/from a foreign format (Prisma SQLL import/export).
-    ///
-    /// Use `--direction to-prisma` to export an ODSL schema to Prisma Schema
-    /// Language, or `--direction from-prisma` to import a Prisma schema into
-    /// ODSL.
+    /// Transpile between ODSL and Prisma / Drizzle schemas.
     Convert {
         /// Conversion direction.
-        #[arg(long, value_enum, default_value_t = ConvertDirection::ToPrisma)]
+        #[arg(long, value_enum)]
         direction: ConvertDirection,
-        /// Input file (`.odsl` for `to-prisma`, `.prisma` for `from-prisma`).
-        #[arg(default_value = "schema.odsl")]
+        /// Input file.
         input: std::path::PathBuf,
-        /// Output file (`.prisma` for `to-prisma`, `.odsl` for `from-prisma`).
-        #[arg(default_value = "schema.prisma")]
+        /// Output file.
         out: std::path::PathBuf,
     },
-    /// Health-check the project: lockfile in sync, generated code in sync,
-    /// migrations applied, and no schema drift (Phase 2.3).
+    /// One-shot project health check (schema, lockfile, drift, lint, live DB).
     Doctor {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (affects validation + drift checks).
+        /// Target backend.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Optionally check a live database (sqlite:// / postgres:// / mysql://)
-        /// for applied-migration drift.
+        /// Also check this live database for the current schema checksum.
         #[arg(long)]
         db_url: Option<String>,
     },
 }
 
-/// Conversion direction for `odsl convert`.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-enum ConvertDirection {
-    /// Export an ODSL schema to Prisma Schema Language (`.odsl` -> `.prisma`).
-    ToPrisma,
-    /// Import a Prisma Schema Language document into ODSL (`.prisma` -> `.odsl`).
-    FromPrisma,
-    /// Export an ODSL schema to a Drizzle ORM (TypeScript) schema.
-    ToDrizzle,
-    /// Import a Drizzle ORM (TypeScript) schema into ODSL (`.ts` -> `.odsl`).
-    FromDrizzle,
-}
-
-/// Sub-actions of `odsl migrate`.
 #[derive(Subcommand)]
 enum MigrateAction {
-    /// Print the migration plan (optionally write the lockfile).
+    /// Print the pending migration plan; `--apply` updates `odsl.lock`.
     Plan {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (affects validation only).
+        /// Target backend.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Write the new lockfile after computing the plan.
+        /// Write the new lockfile after printing the plan.
         #[arg(long)]
         apply: bool,
     },
-    /// Generate migration files from the schema diff (no DB connection needed).
+    /// Write the pending migration as a `.sql` or SeaORM file.
     Create {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (selects the DDL dialect).
+        /// Target backend.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Output directory for migration files.
+        /// Output directory for the migration file.
         #[arg(long, default_value = "migrations")]
         out: std::path::PathBuf,
-        /// Emit SeaORM `up`/`down` Rust modules instead of `.sql`.
+        /// Emit a SeaORM migration (Rust) instead of plain SQL.
         #[arg(long)]
         sea_orm: bool,
     },
-    /// Apply the plan to a live database at `--db-url` (implies writing the lockfile).
+    /// Apply the pending plan; `--db-url` targets a live database.
     Up {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (affects validation only).
+        /// Target backend.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Database connection URL (`sqlite://`, `postgres://`, `mongodb://`).
+        /// Database connection URL.
         #[arg(long)]
         db_url: Option<String>,
-        /// Skip the interactive confirmation for destructive changes
-        /// (dropping models/fields, altering columns). Use with care.
+        /// Apply destructive operations without asking.
         #[arg(long)]
         force: bool,
     },
-    /// Roll back the deployed schema (`odsl.lock`) to the desired state
-    /// (`schema.odsl`). Computes the inverse of `migrate up` and either prints
-    /// the rollback DDL or, with `--db-url`, applies it to the live database.
+    /// Roll the live database back to the deployed lockfile state.
     Down {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (selects the DDL dialect).
+        /// Target backend.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Live database connection URL (`sqlite://`, `postgres://`,
-        /// `mongodb://`). When provided, the rollback is applied (not just
-        /// printed).
+        /// Database connection URL.
         #[arg(long)]
         db_url: Option<String>,
-        /// Skip the interactive confirmation for destructive changes
-        /// (dropping models/fields, altering columns). Use with care.
+        /// Apply destructive operations without asking.
         #[arg(long)]
         force: bool,
     },
-    /// Show a visual diff between the deployed schema (`odsl.lock`), the live
-    /// database (`--db-url`), and the desired schema (`schema.odsl`).
+    /// Show drift between schema, lockfile and (optionally) the live database.
     Status {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (affects validation only).
+        /// Target backend.
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Optional live database connection URL to compare against.
+        /// Database connection URL.
         #[arg(long)]
         db_url: Option<String>,
     },
-    /// Apply `up` against a live database, assert the schema matches the
-    /// target lockfile, then apply `down` and assert it reverts to the
-    /// prior (empty) state. The database at `--db-url` is wiped first.
+    /// Round-trip test: wipe the database, apply `up`, assert, revert `down`.
     Test {
         /// Input `.odsl` file.
         #[arg(default_value = "schema.odsl")]
         input: std::path::PathBuf,
-        /// Target backend (selects the DDL dialect; only SQL backends are
-        /// currently supported by `migrate test`).
+        /// Target backend (SQL backends only).
         #[arg(long, value_enum, default_value_t = Target::SeaOrmSqlite)]
         target: Target,
-        /// Live database connection URL (`sqlite://`, `postgres://`,
-        /// `mysql://`). The database is reset to empty before the test.
+        /// Database connection URL (the database is wiped first).
         #[arg(long)]
         db_url: String,
-        /// Only verify `up` (apply + assert) and skip the `down`/`revert`
-        /// step. Useful when the target backend has no reliable rollback.
+        /// Skip the down/revert phase.
         #[arg(long)]
         up_only: bool,
     },
@@ -289,7 +244,7 @@ fn main() -> Result<(), OdslError> {
     init_tracing(cli.verbose);
 
     match cli.command {
-        Command::Init { path } => cmd_init(&path),
+        Command::Init { path } => scaffold::cmd_init(&path),
         Command::Build {
             input,
             target,
@@ -297,9 +252,9 @@ fn main() -> Result<(), OdslError> {
             watch,
         } => {
             if watch {
-                cmd_build_watch(&input, target, &out)
+                build::cmd_build_watch(&input, target, &out)
             } else {
-                run_build(&input, target, &out)
+                build::run_build(&input, target, &out)
             }
         }
         Command::Migrate { action } => match action {
@@ -307,61 +262,61 @@ fn main() -> Result<(), OdslError> {
                 input,
                 target,
                 apply,
-            } => cmd_migrate_plan(&input, target, apply),
+            } => migrate::cmd_migrate_plan(&input, target, apply),
             MigrateAction::Create {
                 input,
                 target,
                 out,
                 sea_orm,
-            } => cmd_migrate_create(&input, target, &out, sea_orm),
+            } => migrate::cmd_migrate_create(&input, target, &out, sea_orm),
             MigrateAction::Up {
                 input,
                 target,
                 db_url,
                 force,
-            } => cmd_migrate_up(&input, target, db_url, force),
+            } => migrate::cmd_migrate_up(&input, target, db_url, force),
             MigrateAction::Down {
                 input,
                 target,
                 db_url,
                 force,
-            } => cmd_migrate_down(&input, target, db_url, force),
+            } => migrate::cmd_migrate_down(&input, target, db_url, force),
             MigrateAction::Status {
                 input,
                 target,
                 db_url,
-            } => cmd_migrate_status(&input, target, db_url),
+            } => migrate::cmd_migrate_status(&input, target, db_url),
             MigrateAction::Test {
                 input,
                 target,
                 db_url,
                 up_only,
-            } => cmd_migrate_test(&input, target, &db_url, up_only),
+            } => migrate::cmd_migrate_test(&input, target, &db_url, up_only),
         },
-        Command::Fmt { file, target } => cmd_fmt(file.as_deref(), target),
+        Command::Fmt { file, target } => quality::cmd_fmt(file.as_deref(), target),
         Command::Lint {
             input,
             config,
             deny_warnings,
-        } => cmd_lint(&input, config.as_deref(), deny_warnings),
-        Command::Erd { input, format, out } => cmd_erd(&input, &format, out.as_deref()),
+        } => quality::cmd_lint(&input, config.as_deref(), deny_warnings),
+        Command::Erd { input, format, out } => quality::cmd_erd(&input, &format, out.as_deref()),
         Command::Lsp => {
             odsl_lsp::run_stdio().map_err(|e| OdslError::Io(std::io::Error::other(e.to_string())))
         }
         Command::Mcp => {
             odsl_mcp::run_stdio().map_err(|e| OdslError::Io(std::io::Error::other(e.to_string())))
         }
-        Command::Pull { db_url, out } => cmd_pull(&db_url, &out),
+        Command::Pull { db_url, out } => scaffold::cmd_pull(&db_url, &out),
         Command::Convert {
             direction,
             input,
             out,
-        } => cmd_convert(direction, &input, &out),
+        } => convert::cmd_convert(direction, &input, &out),
         Command::Doctor {
             input,
             target,
             db_url,
-        } => cmd_doctor(&input, target, db_url.as_deref()),
+        } => quality::cmd_doctor(&input, target, db_url.as_deref()),
     }
 }
 
@@ -378,985 +333,16 @@ fn init_tracing(verbose: u8) {
         .try_init();
 }
 
-fn load_ast(input: &std::path::Path, target: Target) -> Result<Ast, OdslError> {
-    // Resolve the full project: follow `use` declarations and merge every
-    // imported module into one AST (roadmap Phase 1.7 — multi-file modules).
-    let project = parse_project(input)?;
-    odsl_core::Validator::validate(&project.ast, Some(target))?;
-    Ok(project.ast)
-}
-
-fn cmd_convert(
-    direction: ConvertDirection,
-    input: &std::path::Path,
-    out: &std::path::Path,
-) -> Result<(), OdslError> {
-    let src = std::fs::read_to_string(input)
-        .map_err(|e| io_err(format!("reading {}: {e}", input.display())))?;
-    let body = match direction {
-        ConvertDirection::ToPrisma => {
-            // Validate the ODSL first so we don't emit a prisma doc from a
-            // broken schema.
-            let ast = parse(&src)?;
-            odsl_core::Validator::validate(&ast, Some(Target::SeaOrmSqlite))?;
-            render_prisma(&ast)
-        }
-        ConvertDirection::FromPrisma => {
-            // Parse + serialize through the canonical ODSL formatter; any
-            // import error surfaces here.
-            prisma_to_odsl(&src).map_err(|e| io_err(format!("converting prisma: {e}")))?
-        }
-        ConvertDirection::ToDrizzle => {
-            let ast = parse(&src)?;
-            odsl_core::Validator::validate(&ast, Some(Target::SeaOrmSqlite))?;
-            render_drizzle(&ast)
-        }
-        ConvertDirection::FromDrizzle => {
-            drizzle_to_odsl(&src).map_err(|e| io_err(format!("converting drizzle: {e}")))?
-        }
-    };
-    std::fs::write(out, &body).map_err(|e| io_err(format!("writing {}: {e}", out.display())))?;
-    println!("wrote {} (direction: {direction:?})", out.display());
-    Ok(())
-}
-
-/// Build an [`OdslError::Io`] from an ad-hoc message (e.g. a guard condition
-/// that is not a real `std::io::Error`). Real IO results propagate via `?`.
-fn io_err(msg: impl Into<String>) -> OdslError {
-    OdslError::Io(std::io::Error::other(msg.into()))
-}
-
-fn cmd_init(path: &std::path::Path) -> Result<(), OdslError> {
-    if path.exists() {
-        return Err(io_err(format!("{} already exists", path.display())));
-    }
-    let skeleton = "# ODSL schema\n# Run `odsl build` to generate backend code.\n\nUser\n  id uuid -pk\n  email string -uniq\n  created_at datetime -tz\n";
-    std::fs::write(path, skeleton)?;
-    // Seed an empty lockfile so the first build has a stable baseline.
-    let lock = path.with_file_name("odsl.lock");
-    let ast = parse(skeleton)?;
-    odsl_core::Validator::validate(&ast, Some(Target::SeaOrmSqlite))?;
-    write_lockfile(&lock, &Lockfile::from_ast(&ast))?;
-    tracing::info!(schema = %path.display(), lock = %lock.display(), "initialized project");
-    println!("created {} and {}", path.display(), lock.display());
-    Ok(())
-}
-
-/// Reverse-engineer a live database (via `--db-url`) into an ODSL schema file.
-fn cmd_pull(db_url: &str, out: &std::path::Path) -> Result<(), OdslError> {
-    use odsl_adapter::introspect::introspect_to_odsl;
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| OdslError::Io(std::io::Error::other(e.to_string())))?;
-    let odsl = rt
-        .block_on(introspect_to_odsl(db_url))
-        .map_err(|e| OdslError::Io(std::io::Error::other(e)))?;
-    std::fs::write(out, &odsl).map_err(|e| {
-        OdslError::Io(std::io::Error::other(format!(
-            "writing {}: {e}",
-            out.display()
-        )))
-    })?;
-    println!("wrote {}", out.display());
-    Ok(())
-}
-
-/// Watch `input` for changes and rebuild on every modification until the
-/// process is interrupted (Ctrl-C). Uses the `notify` crate's OS-native file
-/// watcher; the first build runs immediately.
-fn cmd_build_watch(
-    input: &std::path::Path,
-    target: Target,
-    out: &std::path::Path,
-) -> Result<(), OdslError> {
-    use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    let dir = input
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let watch_name = input
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "*.odsl".to_string());
-
-    // Initial build.
-    match run_build(input, target, out) {
-        Ok(()) => println!("watching {} (Ctrl-C to stop)", input.display()),
-        Err(e) => eprintln!("initial build failed: {e}"),
-    }
-
-    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher = RecommendedWatcher::new(
-        move |res: notify::Result<Event>| {
-            let _ = tx.send(res);
-        },
-        Config::default().with_poll_interval(Duration::from_millis(200)),
-    )
-    .map_err(|e| io_err(format!("creating watcher: {e}")))?;
-    watcher
-        .watch(&dir, RecursiveMode::NonRecursive)
-        .map_err(|e| io_err(format!("watching {}: {e}", dir.display())))?;
-
-    for res in rx {
-        match res {
-            Ok(event) => {
-                // Only react to modifications of the watched file.
-                if !event_triggers_rebuild(&event, &watch_name) {
-                    continue;
-                }
-                match run_build(input, target, out) {
-                    Ok(()) => println!("rebuilt at {}", now_str()),
-                    Err(e) => eprintln!("build failed at {}: {e}", now_str()),
-                }
-            }
-            Err(e) => eprintln!("watch error: {e}"),
-        }
-    }
-    Ok(())
-}
-
-/// Whether a filesystem event should trigger a rebuild: a *modify* event on the
-/// exact watched file (ignoring events for other paths or non-modify events).
-fn event_triggers_rebuild(event: &notify::Event, watch_name: &str) -> bool {
-    let is_modify = matches!(event.kind, notify::EventKind::Modify(_));
-    let relevant = event.paths.iter().any(|p| {
-        p.file_name()
-            .map(|n| n.to_string_lossy() == watch_name)
-            .unwrap_or(false)
-    });
-    is_modify && relevant
-}
-
-/// Build (parse + validate + codegen) once. Returns `Ok` on success.
-fn run_build(
-    input: &std::path::Path,
-    target: Target,
-    out: &std::path::Path,
-) -> Result<(), OdslError> {
-    let ast = load_ast(input, target)?;
-    let files = match target {
-        Target::SeaOrmSqlite | Target::SeaOrmPostgres | Target::SeaOrmMysql => {
-            SeaOrmRenderer::new(target).render(&ast)?
-        }
-        Target::Mongo => MongoRenderer::new(target).render(&ast)?,
-        Target::TypeScript => TypeScriptRenderer::new(target).render(&ast)?,
-        Target::GraphQl => GraphQLRenderer::new(target).render(&ast)?,
-        Target::OpenApi => OpenApiRenderer::new(target).render(&ast)?,
-        Target::JsonSchema => JsonSchemaRenderer::new(target).render(&ast)?,
-        Target::Zod => TsValidatorRenderer::new(target, ValidatorFlavor::Zod).render(&ast)?,
-        Target::Valibot => {
-            TsValidatorRenderer::new(target, ValidatorFlavor::Valibot).render(&ast)?
-        }
-        Target::TypeBox => {
-            TsValidatorRenderer::new(target, ValidatorFlavor::TypeBox).render(&ast)?
-        }
-        Target::Trpc => TrpcRenderer::new(target).render(&ast)?,
-    };
-    std::fs::create_dir_all(out)?;
-    for (rel, contents) in &files {
-        let full = out.join(rel);
-        if let Some(parent) = full.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&full, contents)?;
-    }
-    tracing::info!(target = ?target, files = files.len(), out = %out.display(), "generated code");
-    println!("generated {} files into {}", files.len(), out.display());
-    Ok(())
-}
-
-/// Local-time HH:MM:SS for watch-mode log lines.
-fn now_str() -> String {
-    chrono::Local::now().format("%H:%M:%S").to_string()
-}
-
-/// One-line description of a single op (used by the destructive-guard prompt).
-fn describe_op(op: &odsl_migrator::MigrationOp) -> String {
-    match op {
-        odsl_migrator::MigrationOp::DropModel { model } => format!("drop model {model}"),
-        odsl_migrator::MigrationOp::DropField { model, field } => {
-            format!("drop field {model}.{field}")
-        }
-        odsl_migrator::MigrationOp::AlterField { model, field, .. } => {
-            format!("alter field {model}.{field}")
-        }
-        odsl_migrator::MigrationOp::CreateModel { .. }
-        | odsl_migrator::MigrationOp::AddField { .. }
-        | odsl_migrator::MigrationOp::CreateView { .. }
-        | odsl_migrator::MigrationOp::DropView { .. }
-        | odsl_migrator::MigrationOp::SeedData { .. } => String::new(),
-    }
-}
-
-fn cmd_migrate_plan(input: &std::path::Path, target: Target, apply: bool) -> Result<(), OdslError> {
-    let ast = load_ast(input, target)?;
-    let lock_path = input.with_file_name("odsl.lock");
-    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
-        seeds: vec![],
-        version: Lockfile::VERSION,
-        checksum: String::new(),
-        models: vec![],
-        views: vec![],
-    });
-    let plan = plan_migration(&current, &ast)?;
-    for line in plan.describe() {
-        println!("  {line}");
-    }
-    if plan.ops.is_empty() {
-        println!("no changes");
-    }
-    if apply {
-        write_lockfile(&lock_path, &Lockfile::from_ast(&ast))?;
-        tracing::info!(lock = %lock_path.display(), "lockfile updated");
-        println!("updated {}", lock_path.display());
-    }
-    Ok(())
-}
-
-fn cmd_migrate_up(
-    input: &std::path::Path,
-    target: Target,
-    db_url: Option<String>,
-    force: bool,
-) -> Result<(), OdslError> {
-    let ast = load_ast(input, target)?;
-    let lock_path = input.with_file_name("odsl.lock");
-    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
-        seeds: vec![],
-        version: Lockfile::VERSION,
-        checksum: String::new(),
-        models: vec![],
-        views: vec![],
-    });
-    let plan = plan_migration(&current, &ast)?;
-    for line in plan.describe() {
-        println!("  {line}");
-    }
-
-    if plan.ops.is_empty() {
-        println!("no changes");
-    }
-
-    // Guard destructive operations (drop model/field, alter column) unless
-    // the user explicitly passes --force or confirms interactively.
-    if plan.is_destructive() && !force {
-        if std::io::stdin().is_terminal() {
-            let count = plan.destructive_ops().len();
-            println!(
-                "\nThis plan contains {count} potentially destructive operation(s) \
-                 that may DESTROY DATA (drop model/field, alter column):"
-            );
-            for op in plan.destructive_ops() {
-                println!("  - {}", describe_op(op));
-            }
-            print!("Type 'yes' to proceed, anything else to abort: ");
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-            let mut answer = String::new();
-            if std::io::stdin().read_line(&mut answer).is_err() || answer.trim() != "yes" {
-                println!("aborted; no changes applied");
-                return Ok(());
-            }
-        } else {
-            // Non-interactive (piped) without --force: refuse destructive ops.
-            return Err(io_err(
-                "refusing destructive migration in non-interactive mode; \
-                 re-run with --force to apply, or pipe 'yes' to confirm",
-            ));
-        }
-    }
-
-    // Apply against a live database when a connection URL is provided.
-    if let Some(url) = &db_url {
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
-        let target_lock = Lockfile::from_ast(&ast);
-        let applied = runtime
-            .block_on(odsl_adapter::connect(url))
-            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
-        // Idempotency: skip if this exact schema state was already applied.
-        runtime
-            .block_on(applied.ensure_history_table())
-            .map_err(|e| io_err(format!("history table: {e}")))?;
-        let schema_key = target_lock.checksum.clone();
-        let already = runtime
-            .block_on(applied.applied_migrations())
-            .map_err(|e| io_err(format!("history read: {e}")))?;
-        if already.iter().any(|n| n == &schema_key) {
-            println!("schema {schema_key} already applied; skipping");
-        } else {
-            let statements = runtime
-                .block_on(applied.apply(&plan, &target_lock, Some(&current)))
-                .map_err(|e| io_err(format!("applying migration: {e}")))?;
-            for stmt in &statements {
-                println!("  applied: {stmt}");
-            }
-            println!("applied {} change(s) to {url}", statements.len());
-            runtime
-                .block_on(applied.record_applied(&schema_key, &schema_key))
-                .map_err(|e| io_err(format!("recording migration: {e}")))?;
-        }
-    }
-
-    // `up` always records the new baseline lockfile.
-    write_lockfile(&lock_path, &Lockfile::from_ast(&ast))?;
-    tracing::info!(lock = %lock_path.display(), "lockfile updated");
-    println!("updated {}", lock_path.display());
-    Ok(())
-}
-
-fn cmd_migrate_create(
-    input: &std::path::Path,
-    target: Target,
-    out: &std::path::Path,
-    sea_orm: bool,
-) -> Result<(), OdslError> {
-    let ast = load_ast(input, target)?;
-    let lock_path = input.with_file_name("odsl.lock");
-    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
-        seeds: vec![],
-        version: Lockfile::VERSION,
-        checksum: String::new(),
-        models: vec![],
-        views: vec![],
-    });
-    let plan = plan_migration(&current, &ast)?;
-    for line in plan.describe() {
-        println!("  {line}");
-    }
-    if plan.ops.is_empty() {
-        println!("no changes; nothing to generate");
-        return Ok(());
-    }
-    let dialect = match target {
-        Target::SeaOrmPostgres => SqlDialect::Postgres,
-        Target::SeaOrmMysql => SqlDialect::Mysql,
-        _ => SqlDialect::Sqlite,
-    };
-    let format = if sea_orm {
-        MigrationFormat::SeaOrm
-    } else {
-        MigrationFormat::Sql
-    };
-    let written = write_migration(
-        out,
-        format,
-        dialect,
-        &plan,
-        &Lockfile::from_ast(&ast),
-        Some(&current),
-    )
-    .map_err(|e| io_err(format!("writing migration: {e}")))?;
-    match written {
-        Some(name) => {
-            println!("generated {}/{name}", out.display());
-            Ok(())
-        }
-        None => {
-            println!("no migration file written");
-            Ok(())
-        }
-    }
-}
-
-/// Rollback plan: revert the *deployed* schema (odsl.lock) back to the
-/// *desired* schema (schema.odsl). The inverse plan is `diff(target, current)`
-/// rendered as the down SQL / Mongo commands. With `--db-url` the rollback is
-/// applied to the live database; otherwise it is printed for inspection.
-fn cmd_migrate_down(
-    input: &std::path::Path,
-    target: Target,
-    db_url: Option<String>,
-    force: bool,
-) -> Result<(), OdslError> {
-    let ast = load_ast(input, target)?;
-    let lock_path = input.with_file_name("odsl.lock");
-    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
-        seeds: vec![],
-        version: Lockfile::VERSION,
-        checksum: String::new(),
-        models: vec![],
-        views: vec![],
-    });
-    let target_lock = Lockfile::from_ast(&ast);
-    // Inverse plan: from the desired schema back to the deployed one.
-    let plan = MigrationPlan::diff(&target_lock, &current);
-
-    if plan.ops.is_empty() {
-        println!("no down migration (nothing to revert)");
-        return Ok(());
-    }
-
-    // Show what the rollback will do.
-    println!("=== rollback (desired -> deployed) ===");
-    for line in plan.describe() {
-        println!("  - {line}");
-    }
-
-    // Guard destructive operations (drop model/field, alter column) unless
-    // --force or interactive confirmation.
-    if plan.is_destructive() && !force {
-        if std::io::stdin().is_terminal() {
-            let count = plan.destructive_ops().len();
-            println!(
-                "\nThis rollback contains {count} potentially destructive operation(s) \
-                 that may DESTROY DATA (drop model/field, alter column):"
-            );
-            for op in plan.destructive_ops() {
-                println!("  - {}", describe_op(op));
-            }
-            print!("Type 'yes' to proceed, anything else to abort: ");
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-            let mut answer = String::new();
-            if std::io::stdin().read_line(&mut answer).is_err() || answer.trim() != "yes" {
-                println!("aborted; no changes applied");
-                return Ok(());
-            }
-        } else {
-            return Err(io_err(
-                "refusing destructive rollback in non-interactive mode; \
-                 re-run with --force to apply, or pipe 'yes' to confirm",
-            ));
-        }
-    }
-
-    let dialect = match target {
-        Target::SeaOrmPostgres => SqlDialect::Postgres,
-        Target::SeaOrmMysql => SqlDialect::Mysql,
-        _ => SqlDialect::Sqlite,
-    };
-
-    // No live DB: print the rollback DDL only.
-    let Some(url) = &db_url else {
-        let down =
-            odsl_adapter::migrate::render_down_sql(dialect, &plan, &target_lock, Some(&current));
-        println!("\n-- down (revert to deployed state)");
-        for stmt in &down {
-            println!("{stmt};");
-        }
-        return Ok(());
-    };
-
-    // Live DB: apply the rollback via the adapter's `revert`.
-    let runtime =
-        tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
-    let applied = runtime.block_on(async {
-        let adapter = odsl_adapter::connect(url)
-            .await
-            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
-        adapter
-            .revert(&plan, &target_lock, Some(&current))
-            .await
-            .map_err(|e| io_err(format!("applying rollback: {e}")))
-    })?;
-    for stmt in &applied {
-        println!("  reverted: {stmt}");
-    }
-    println!("reverted {} change(s) on {url}", applied.len());
-    Ok(())
-}
-
-/// Show the drift between the deployed schema (odsl.lock), an optional live
-/// database (`--db-url`), and the desired schema (schema.odsl).
-fn cmd_migrate_status(
-    input: &std::path::Path,
-    target: Target,
-    db_url: Option<String>,
-) -> Result<(), OdslError> {
-    let ast = load_ast(input, target)?;
-    let lock_path = input.with_file_name("odsl.lock");
-    let current = read_lockfile(&lock_path)?.unwrap_or_else(|| Lockfile {
-        seeds: vec![],
-        version: Lockfile::VERSION,
-        checksum: String::new(),
-        models: vec![],
-        views: vec![],
-    });
-    let target_lock = Lockfile::from_ast(&ast);
-    let plan = plan_migration(&current, &ast)?;
-
-    println!("=== schema.odsl (desired) vs odsl.lock (deployed) ===");
-    if plan.ops.is_empty() {
-        println!("  in sync — no pending changes");
-    } else {
-        for line in plan.describe() {
-            println!("  + {line}");
-        }
-        let advisories = plan.advisories(target);
-        if !advisories.is_empty() {
-            println!("  ! advisories (zero-downtime):");
-            for (_, msg) in advisories {
-                println!("    - {msg}");
-            }
-        }
-    }
-
-    if let Some(url) = &db_url {
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
-        let applied = runtime
-            .block_on(odsl_adapter::connect(url))
-            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
-        runtime
-            .block_on(applied.ensure_history_table())
-            .map_err(|e| io_err(format!("history table: {e}")))?;
-        let applied_migrations = runtime
-            .block_on(applied.applied_migrations())
-            .map_err(|e| io_err(format!("history read: {e}")))?;
-        println!("=== live database ({url}) ===");
-        if applied_migrations
-            .iter()
-            .any(|n| n == &target_lock.checksum)
-        {
-            println!(
-                "  schema checksum {chk} is applied",
-                chk = &target_lock.checksum
-            );
-        } else {
-            println!(
-                "  schema checksum {chk} NOT applied (database is behind or diverged)",
-                chk = &target_lock.checksum
-            );
-            println!("  applied migrations: {applied_migrations:?}");
-        }
-    }
-    Ok(())
-}
-
-/// `odsl doctor` — a single health-check command (Phase 2.3).
-///
-/// Verifies the project and exits non-zero if any critical check fails: the
-/// `schema.odsl` file must parse and validate (otherwise the project is
-/// broken); the `odsl.lock` file must be present and readable; and there must be
-/// no schema drift, i.e. the desired schema matches the deployed lockfile
-/// (`plan_migration` produces no ops). With `--db-url`, the live database is
-/// also checked for the current schema checksum. Lint findings are always
-/// reported but never fail the doctor (they are advisory).
-fn cmd_doctor(
-    input: &std::path::Path,
-    target: Target,
-    db_url: Option<&str>,
-) -> Result<(), OdslError> {
-    let mut problems = 0usize;
-
-    // 1. Parse + validate the desired schema.
-    println!("=== schema.odsl ===");
-    let ast = match load_ast(input, target) {
-        Ok(a) => {
-            println!(
-                "  ✓ parsed and validated ({} models, {} views)",
-                a.models().count(),
-                a.views().count()
-            );
-            a
-        }
-        Err(e) => {
-            println!("  ✗ parse/validate failed: {e}");
-            return Err(e);
-        }
-    };
-
-    // 2. Lockfile presence.
-    println!("=== odsl.lock ===");
-    let lock_path = input.with_file_name("odsl.lock");
-    let current = match read_lockfile(&lock_path)? {
-        Some(lf) => {
-            println!("  ✓ lockfile present (checksum {})", &lf.checksum);
-            lf
-        }
-        None => {
-            println!(
-                "  ! no lockfile found at {} — run `odsl migrate plan --apply`",
-                lock_path.display()
-            );
-            problems += 1;
-            Lockfile {
-                seeds: vec![],
-                version: Lockfile::VERSION,
-                checksum: String::new(),
-                models: vec![],
-                views: vec![],
-            }
-        }
-    };
-
-    // 3. Drift: desired schema vs deployed lockfile.
-    println!("=== drift ===");
-    if current.models.is_empty() && current.views.is_empty() {
-        println!("  ! no deployed schema to diff against (lockfile empty)");
-        problems += 1;
-    } else {
-        let plan = plan_migration(&current, &ast)?;
-        if plan.ops.is_empty() {
-            println!("  ✓ in sync — no pending migrations");
-        } else {
-            println!("  ✗ drift detected — {} pending change(s):", plan.ops.len());
-            for line in plan.describe() {
-                println!("    + {line}");
-            }
-            problems += 1;
-        }
-    }
-
-    // 4. Lint summary (advisory). Style rules (missing timestamps / model doc)
-    //    are reported but never fail the doctor — they describe boilerplate the
-    //    `config` block exists to remove, not a project-health problem.
-    println!("=== lint ===");
-    let linter = odsl_core::lint::Linter::new(odsl_core::lint::LintConfig::default());
-    let findings = linter.lint(&ast);
-    if findings.is_empty() {
-        println!("  ✓ no lint findings");
-    } else {
-        let errors = findings
-            .iter()
-            .filter(|f| f.severity == odsl_core::lint::Severity::Error)
-            .count();
-        let warnings = findings.len() - errors;
-        println!("  ! {errors} error(s), {warnings} warning(s)");
-        for f in &findings {
-            println!("    - [{}] {}: {}", f.severity, f.rule.as_str(), f.message);
-        }
-        // Only *non-style* errors count as project-health problems.
-        let hard_errors = findings
-            .iter()
-            .filter(|f| {
-                f.severity == odsl_core::lint::Severity::Error
-                    && !matches!(
-                        f.rule,
-                        odsl_core::lint::LintRule::MissingTimestamps
-                            | odsl_core::lint::LintRule::MissingModelDoc
-                    )
-            })
-            .count();
-        problems += hard_errors;
-    }
-
-    // 5. Optional live-database sync.
-    if let Some(url) = db_url {
-        println!("=== live database ({url}) ===");
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
-        let adapter = runtime
-            .block_on(odsl_adapter::connect(url))
-            .map_err(|e| io_err(format!("connecting to {url}: {e}")))?;
-        runtime
-            .block_on(adapter.ensure_history_table())
-            .map_err(|e| io_err(format!("history table: {e}")))?;
-        let applied = runtime
-            .block_on(adapter.applied_migrations())
-            .map_err(|e| io_err(format!("history read: {e}")))?;
-        let target_lock = Lockfile::from_ast(&ast);
-        if applied.iter().any(|n| n == &target_lock.checksum) {
-            println!("  ✓ current schema checksum is applied");
-        } else {
-            println!(
-                "  ✗ schema checksum {} NOT applied — database is behind or diverged",
-                target_lock.checksum
-            );
-            problems += 1;
-        }
-    }
-
-    if problems == 0 {
-        println!("\n✓ doctor: healthy");
-        Ok(())
-    } else {
-        Err(io_err(format!(
-            "doctor found {problems} problem(s) — see report above"
-        )))
-    }
-}
-
-/// Apply `up`, assert the live schema matches the target, apply `down`, and
-/// assert the live schema reverts to empty. The database at `db_url` is wiped
-/// first so the test is deterministic and repeatable.
-///
-/// Returns `Ok(())` only when both assertions hold; otherwise an error
-/// describing the mismatch (which makes the CLI exit non-zero).
-fn cmd_migrate_test(
-    input: &std::path::Path,
-    target: Target,
-    db_url: &str,
-    up_only: bool,
-) -> Result<(), OdslError> {
-    // Reject backends without a SQL round-trip (Mongo introspection is lossy).
-    if !matches!(
-        target,
-        Target::SeaOrmSqlite | Target::SeaOrmPostgres | Target::SeaOrmMysql
-    ) {
-        return Err(io_err(format!(
-            "migrate test supports SQL backends only (got {target:?})"
-        )));
-    }
-
-    let ast = load_ast(input, target)?;
-    let target_lock = Lockfile::from_ast(&ast);
-    let empty = Lockfile {
-        seeds: vec![],
-        version: Lockfile::VERSION,
-        checksum: String::new(),
-        models: vec![],
-        views: vec![],
-    };
-
-    let runtime =
-        tokio::runtime::Runtime::new().map_err(|e| io_err(format!("tokio runtime: {e}")))?;
-
-    // Ensure a fresh SQLite database file exists so the adapter can connect
-    // (SeaORM does not auto-create a non-existent sqlite file on connect).
-    if let Some(path) = sqlite_file_path(db_url) {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if !path.exists() {
-            std::fs::File::create(&path)
-                .map_err(|e| io_err(format!("creating database file {}: {e}", path.display())))?;
-        }
-    }
-
-    // Reset the live database to an empty baseline.
-    runtime
-        .block_on(async {
-            let adapter = odsl_adapter::connect(db_url).await?;
-            adapter.wipe().await
-        })
-        .map_err(|e: odsl_adapter::AdapterError| io_err(format!("wiping database: {e}")))?;
-
-    // --- UP ---
-    let plan_up = MigrationPlan::diff(&empty, &target_lock);
-    println!("=== up: applying {} change(s) ===", plan_up.ops.len());
-    for line in plan_up.describe() {
-        println!("  + {line}");
-    }
-    runtime
-        .block_on(async {
-            let adapter = odsl_adapter::connect(db_url).await?;
-            adapter.apply(&plan_up, &target_lock, Some(&empty)).await
-        })
-        .map_err(|e: odsl_adapter::AdapterError| io_err(format!("applying up: {e}")))?;
-
-    // Assert the live schema matches the target.
-    let live_up = runtime
-        .block_on(odsl_adapter::introspect::introspect_to_odsl(db_url))
-        .map_err(|e| io_err(format!("introspecting up state: {e}")))?;
-    let live_up_ast = odsl_parser::parse(&live_up)
-        .map_err(|e| io_err(format!("parsing introspected up schema: {e}")))?;
-    odsl_core::Validator::validate(&live_up_ast, Some(target))
-        .map_err(|e| io_err(format!("validating up state: {e}")))?;
-    if let Err(mismatch) = ast.schema_matches(&live_up_ast) {
-        return Err(io_err(format!("up schema mismatch: {mismatch}")));
-    }
-    // Strict mode additionally compares column types: a silent type change
-    // (e.g. `int` -> `bigint`) would pass the structural check above but is a
-    // real drift. Surface it as a non-fatal warning (the live DB already
-    // matches structurally, so we don't fail the test on type-only drift).
-    if let Err(drift) = ast.schema_matches_strict(&live_up_ast) {
-        eprintln!("⚠ schema type drift detected: {drift}");
-    }
-    println!("✓ up: live database matches the target schema");
-
-    if up_only {
-        println!("✓ migrate test passed (up-only)");
-        return Ok(());
-    }
-
-    // --- DOWN ---
-    // Revert the *same* up-plan: `revert` inverts each op (CreateModel ->
-    // DROP TABLE), so passing the up-plan returns the schema to empty.
-    // `current` is the live state before the rollback (the target schema).
-    let plan_down = plan_up.clone();
-    println!("=== down: reverting {} change(s) ===", plan_down.ops.len());
-    for line in plan_down.describe() {
-        println!("  - {line}");
-    }
-    runtime
-        .block_on(async {
-            let adapter = odsl_adapter::connect(db_url).await?;
-            adapter
-                .revert(&plan_down, &target_lock, Some(&target_lock))
-                .await
-        })
-        .map_err(|e: odsl_adapter::AdapterError| io_err(format!("applying down: {e}")))?;
-
-    // Assert the live schema is back to empty (no target models remain).
-    let live_down = runtime
-        .block_on(odsl_adapter::introspect::introspect_to_odsl(db_url))
-        .map_err(|e| io_err(format!("introspecting down state: {e}")))?;
-    let live_down_ast = odsl_parser::parse(&live_down)
-        .map_err(|e| io_err(format!("parsing introspected down schema: {e}")))?;
-    // The empty expectation has no models; schema_matches against it means
-    // the live DB must not contain any of the target's models.
-    if let Err(mismatch) = empty_ast().schema_matches(&live_down_ast) {
-        // An empty expected schema still requires nothing, so any mismatch
-        // here is unexpected; report it defensively.
-        return Err(io_err(format!("down schema mismatch: {mismatch}")));
-    }
-    // Explicitly ensure no target model survived the rollback.
-    let surviving: Vec<String> = live_down_ast
-        .models()
-        .filter(|(_, m)| ast.model_by_name(&m.name).is_some())
-        .map(|(_, m)| m.name.clone())
-        .collect();
-    if !surviving.is_empty() {
-        return Err(io_err(format!(
-            "down did not revert: target model(s) still present: {surviving:?}"
-        )));
-    }
-    println!("✓ down: live database reverted to empty (no target models)");
-    println!("✓ migrate test passed");
-    Ok(())
-}
-
-/// An AST with no models — the post-`down` baseline.
-fn empty_ast() -> Ast {
-    Ast::new()
-}
-
-/// If `url` is a SQLite `file:`/`sqlite:////` URL, return the on-disk file path
-/// so the caller can pre-create the file/directory (SeaORM does not create a
-/// fresh SQLite database on connect). Returns `None` for other backends.
-fn sqlite_file_path(url: &str) -> Option<std::path::PathBuf> {
-    let stripped = url
-        .strip_prefix("sqlite:////")
-        .or_else(|| url.strip_prefix("sqlite:///"))
-        .or_else(|| url.strip_prefix("sqlite://"))
-        .or_else(|| url.strip_prefix("sqlite:"))?;
-    if stripped.is_empty() {
-        return None;
-    }
-    Some(std::path::PathBuf::from(stripped))
-}
-
-/// Deterministically reformat an ODSL file.
-///
-/// When `file` is `Some`, the canonicalised content is written back to it (in
-/// place). When `None`, the source is read from stdin and the result printed to
-/// stdout.
-fn cmd_fmt(file: Option<&std::path::Path>, target: Target) -> Result<(), OdslError> {
-    let src = match file {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| io_err(format!("reading {}: {e}", path.display())))?,
-        None => {
-            use std::io::Read;
-            let mut buf = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buf)
-                .map_err(|e| io_err(format!("reading stdin: {e}")))?;
-            buf
-        }
-    };
-    let formatted = {
-        let ast = odsl_parser::parse(&src)?;
-        odsl_core::validator::Validator::validate(&ast, Some(target))?;
-        odsl_core::formatter::format_ast(&ast)
-    };
-    match file {
-        Some(path) => {
-            std::fs::write(path, &formatted)
-                .map_err(|e| io_err(format!("writing {}: {e}", path.display())))?;
-            println!("formatted {}", path.display());
-        }
-        None => {
-            print!("{formatted}");
-        }
-    }
-    Ok(())
-}
-
-/// Run the lint engine over the schema and print findings.
-///
-/// Returns `Ok(())` when no error-severity findings are produced (warnings are
-/// reported but do not fail the command unless `--deny-warnings` is set).
-fn cmd_lint(
-    input: &std::path::Path,
-    config: Option<&std::path::Path>,
-    deny_warnings: bool,
-) -> Result<(), OdslError> {
-    let src = std::fs::read_to_string(input)
-        .map_err(|e| io_err(format!("reading {}: {e}", input.display())))?;
-    let ast = odsl_parser::parse(&src)?;
-    odsl_core::Validator::validate(&ast, None)?;
-
-    // Resolve the config file: explicit --config, else <input-dir>/.odsl-lint.toml.
-    let cfg_path = match config {
-        Some(p) => p.to_path_buf(),
-        None => input.with_file_name(".odsl-lint.toml"),
-    };
-    let config = odsl_core::lint::LintConfig::from_file(&cfg_path);
-    let linter = odsl_core::lint::Linter::new(config);
-    let findings = linter.lint(&ast);
-
-    if findings.is_empty() {
-        println!("✓ {} lints clean", input.display());
-        return Ok(());
-    }
-
-    let mut errors = 0usize;
-    let mut warnings = 0usize;
-    for f in &findings {
-        match f.severity {
-            odsl_core::lint::Severity::Error => errors += 1,
-            odsl_core::lint::Severity::Warn => warnings += 1,
-            odsl_core::lint::Severity::Info => {}
-            odsl_core::lint::Severity::Off => unreachable!(),
-        }
-        println!("{}", f.render());
-    }
-
-    println!(
-        "\n{} finding(s): {} error(s), {} warning(s)",
-        findings.len(),
-        errors,
-        warnings
-    );
-
-    if errors > 0 || (deny_warnings && warnings > 0) {
-        return Err(io_err(format!(
-            "lint failed: {errors} error(s), {warnings} warning(s)"
-        )));
-    }
-    Ok(())
-}
-
-/// Render an entity-relationship diagram of the schema.
-///
-/// Produces a Mermaid `erDiagram` (default) or DBML document. The diagram is
-/// written to `--out` when given, otherwise printed to stdout.
-fn cmd_erd(
-    input: &std::path::Path,
-    format: &str,
-    out: Option<&std::path::Path>,
-) -> Result<(), OdslError> {
-    let format = ErdFormat::from_cli(format).ok_or_else(|| {
-        io_err(format!(
-            "unknown ERD format `{format}` (expected `mermaid` or `dbml`)"
-        ))
-    })?;
-    // ERD rendering needs no specific backend; validate against the default.
-    let ast = load_ast(input, Target::SeaOrmSqlite)?;
-    let (rel, body) =
-        render_erd(&ast, format).map_err(|e| io_err(format!("rendering ERD: {e}")))?;
-    match out {
-        Some(path) => {
-            std::fs::write(path, &body)
-                .map_err(|e| io_err(format!("writing {}: {e}", path.display())))?;
-            println!("wrote {} ({})", path.display(), rel);
-        }
-        None => {
-            print!("{body}");
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::build::event_triggers_rebuild;
+    use crate::migrate::cmd_migrate_test;
+    use crate::quality::{cmd_doctor, cmd_erd, cmd_lint};
     use notify::{EventKind, event::ModifyKind};
+    use odsl_core::Target;
+    use odsl_core::lockfile::Lockfile;
+    use odsl_migrator::write_lockfile;
+    use odsl_parser::parse_project;
 
     /// Helper to build a single-path notify event.
     fn ev(kind: EventKind, path: &str) -> notify::Event {
@@ -1510,7 +496,7 @@ Post
         let db_url = format!("sqlite:////{}", db.display());
         // Start from a guaranteed-empty database (remove any prior file).
         let _ = std::fs::remove_file(&db);
-        cmd_migrate_test(&schema, odsl_core::Target::SeaOrmSqlite, &db_url, false)
+        cmd_migrate_test(&schema, Target::SeaOrmSqlite, &db_url, false)
             .expect("migrate test should apply up, assert, and revert down");
         // The DB file should exist (recreated by the adapter) but be empty
         // after the down step.
@@ -1538,7 +524,7 @@ Post
         // The schema is valid and round-trips, so this should PASS. We keep it
         // as a second happy-path to guard against regressions in assertion
         // tolerance.
-        cmd_migrate_test(&schema, odsl_core::Target::SeaOrmSqlite, &db_url, false)
+        cmd_migrate_test(&schema, Target::SeaOrmSqlite, &db_url, false)
             .expect("valid schema should pass migrate test");
         let _ = std::fs::remove_dir_all(&dir);
     }
