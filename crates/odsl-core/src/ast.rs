@@ -1061,8 +1061,7 @@ mod tests {
             through_model: None,
             line: 1,
         });
-        let mut line = 2;
-        for (fname, ty, intents) in fields {
+        for (i, (fname, ty, intents)) in fields.into_iter().enumerate() {
             m.add_field(Field {
                 custom_type: None,
                 name: fname.into(),
@@ -1078,9 +1077,8 @@ mod tests {
                 numeric_precision: None,
                 numeric_scale: None,
                 through_model: None,
-                line,
+                line: i + 2,
             });
-            line += 1;
         }
         m
     }
