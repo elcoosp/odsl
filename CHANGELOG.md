@@ -34,6 +34,20 @@ migration guide.
 ### Changed
 - `LintRule::as_str()` is now public (stable kebab-case identifiers such as
   `missing-timestamps`), used by the MCP `lint` tool output.
+- **Modularity (internal).** The `odsl-cli` binary is split from a single
+  1,600-line `main.rs` into focused modules (`project`, `build`, `scaffold`,
+  `convert`, `migrate`, `quality`); the CLI argument model and dispatch stay in
+  `main.rs`. No behavioural changes.
+- **DRY (internal).** Identifier-naming helpers now live only in
+  `odsl-core::naming`: `to_snake`, `to_snake_plural` and the newly added
+  `to_pascal_case` (also re-exported by `odsl-codegen` for compatibility).
+  Private duplicates in the SeaORM, MongoDB, TypeScript and tRPC renderers were
+  removed. `Lockfile::empty()` replaces six hand-rolled empty-lockfile
+  literals, and the CLI shares `load_project`, `confirm_destructive`,
+  `history_entries` and `new_runtime` helpers instead of repeating the
+  load/lockfile, destructive-guard, DB-history and runtime boilerplate. The
+  Drizzle renderer deliberately keeps its camelCase-aware `to_snake`
+  (documented). No behavioural changes.
 
 ## [0.1.0] - initial release
 - Core parser, validator, and codegen crates (SeaORM, Mongo, TypeScript, GraphQL,
