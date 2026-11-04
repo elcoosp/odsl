@@ -438,6 +438,12 @@ fn strip_quotes(s: &str) -> String {
     s.trim().trim_matches('\'').trim_matches('"').to_string()
 }
 
+/// `ModelName` -> `model_name` (snake_case).
+///
+/// Note: unlike [`odsl_core::naming::to_snake`], this variant is camelCase
+/// aware — it treats acronym runs as one word (`HTTPServer` -> `http_server`,
+/// not `h_t_t_p_server`). Prisma/drizzle identifiers conventionally use that
+/// style, so this renderer deliberately keeps its own algorithm.
 fn to_snake(s: &str) -> String {
     let mut out = String::new();
     let mut prev_lower = false;
