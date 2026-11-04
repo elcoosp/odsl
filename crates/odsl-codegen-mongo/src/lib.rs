@@ -11,6 +11,7 @@ use odsl_codegen::format_tokens;
 use odsl_core::Target;
 use odsl_core::ast::{Ast, Field, Model};
 use odsl_core::errors::OdslError;
+use odsl_core::naming::to_snake_plural;
 use odsl_core::types::{FieldType, Intent, ScalarType};
 use odsl_core::validator::CodeRenderer;
 use proc_macro2::TokenStream;
@@ -196,43 +197,6 @@ fn bson_type_for(field: &Field) -> String {
     }
 }
 
-fn to_snake_plural(s: &str) -> String {
-    let snake = s
-        .chars()
-        .enumerate()
-        .flat_map(|(i, c)| {
-            if i != 0 && c.is_uppercase() {
-                vec!['_', c.to_ascii_lowercase()]
-            } else {
-                vec![c.to_ascii_lowercase()]
-            }
-        })
-        .collect::<String>();
-    if snake.ends_with('y') && !ends_with_vowel_y(&snake) {
-        format!("{}ies", &snake[..snake.len() - 1])
-    } else if ends_with_s(&snake) {
-        format!("{}es", snake)
-    } else {
-        format!("{}s", snake)
-    }
-}
-
-fn ends_with_vowel_y(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.len() < 2 {
-        return false;
-    }
-    matches!(bytes[bytes.len() - 2], b'a' | b'e' | b'i' | b'o' | b'u')
-}
-
-fn ends_with_s(s: &str) -> bool {
-    s.ends_with('s')
-        || s.ends_with("ch")
-        || s.ends_with("sh")
-        || s.ends_with("x")
-        || s.ends_with('z')
-}
-
 /// Generate real MongoDB index definitions (using the driver's `IndexModel`
 /// + `create_index` API) for every model. Covers:
 /// - field-level `-uniq`  -> single-field unique index
@@ -252,7 +216,7 @@ fn render_indexes(ast: &Ast) -> String {
             }
             let kind = if unique { "uniq" } else { "idx" };
             let idx_name = format!("{collection}_{kind}_{name}");
-            specs.push(index_spec(&idx_name, &[name.to_string()], unique));
+            specs.push(index_spec(&idx_name, std::slice::from_ref(name), unique));
         }
         // Model-level composite indexes.
         for index in &model.indexes {
