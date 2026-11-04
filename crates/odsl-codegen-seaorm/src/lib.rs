@@ -11,6 +11,7 @@ use odsl_codegen::format_tokens;
 use odsl_core::Target;
 use odsl_core::ast::{Ast, Field, Model};
 use odsl_core::errors::OdslError;
+use odsl_core::naming::{to_pascal_case, to_snake_plural};
 use odsl_core::types::{FieldType, Intent, Reference, ScalarType};
 use odsl_core::validator::CodeRenderer;
 use proc_macro2::TokenStream;
@@ -511,68 +512,8 @@ fn render_active_enum(field: &Field) -> TokenStream {
     }
 }
 
-/// `status` -> `Status`, `order_status` -> `OrderStatus`.
-fn to_pascal_case(s: &str) -> String {
-    let mut out = String::new();
-    let mut upper = true;
-    for c in s.chars() {
-        if c == '_' || c == '-' || c == ' ' {
-            upper = true;
-            continue;
-        }
-        if upper {
-            out.extend(c.to_uppercase());
-            upper = false;
-        } else {
-            out.push(c);
-        }
-    }
-    if out.is_empty() {
-        out.push('X');
-    }
-    out
-}
-
 fn field_reference(field: &Field) -> Option<Reference> {
     odsl_core::validator::field_reference(field)
-}
-
-/// `User` -> `users`, `Person` -> `people` (simple pluralization).
-fn to_snake_plural(s: &str) -> String {
-    let snake = s
-        .chars()
-        .enumerate()
-        .flat_map(|(i, c)| {
-            if i != 0 && c.is_uppercase() {
-                vec!['_', c.to_ascii_lowercase()]
-            } else {
-                vec![c.to_ascii_lowercase()]
-            }
-        })
-        .collect::<String>();
-    if snake.ends_with('y') && !ends_with_vowel_y(&snake) {
-        format!("{}ies", &snake[..snake.len() - 1])
-    } else if ends_with_s(&snake) {
-        format!("{}es", snake)
-    } else {
-        format!("{}s", snake)
-    }
-}
-
-fn ends_with_vowel_y(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.len() < 2 {
-        return false;
-    }
-    matches!(bytes[bytes.len() - 2], b'a' | b'e' | b'i' | b'o' | b'u')
-}
-
-fn ends_with_s(s: &str) -> bool {
-    s.ends_with('s')
-        || s.ends_with("ch")
-        || s.ends_with("sh")
-        || s.ends_with("x")
-        || s.ends_with('z')
 }
 
 fn render_mod_rs(ast: &Ast) -> String {
