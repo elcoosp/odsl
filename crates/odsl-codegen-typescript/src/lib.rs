@@ -10,6 +10,7 @@
 use odsl_core::Target;
 use odsl_core::ast::{Ast, Field, Model, View};
 use odsl_core::errors::OdslError;
+use odsl_core::naming::to_snake;
 use odsl_core::types::{FieldType, Intent, ScalarType};
 use odsl_core::validator::CodeRenderer;
 
@@ -330,18 +331,6 @@ fn render_model_runtime(model: &Model) -> String {
     lines.push("  return m;".to_string());
     lines.push("}".to_string());
     lines.join("\n")
-}
-
-/// `ModelName` -> `model_name` (snake_case).
-fn to_snake(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.char_indices() {
-        if i != 0 && c.is_uppercase() {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 #[cfg(test)]
