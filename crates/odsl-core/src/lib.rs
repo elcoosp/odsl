@@ -24,7 +24,7 @@ pub use ast::{
 pub use errors::{CompileErrorKind, OdslError, ParseError, Span};
 pub use intent_compat::Target;
 pub use lockfile::Lockfile;
-pub use naming::to_snake_plural;
+pub use naming::{to_pascal_case, to_snake, to_snake_plural};
 pub use types::{FieldType, Intent, Reference, ScalarType};
 pub use validator::{CodeRenderer, Validator};
 
